@@ -8,7 +8,7 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.2.1',
+    version: '1.2.2',
     criteriaVersion: '2026.11.1',
     lastReview: '2026-11-01',
     nextReview: '2026-11-08',
