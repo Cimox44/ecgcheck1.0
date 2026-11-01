@@ -705,13 +705,14 @@
     if (A.ok) {
       const row = (lab, tr, mc, u) => '<tr><td>' + lab + '</td><td>' + (tr == null ? '—' : fmt(tr) + (u || '')) + '</td>' + (photo ? '' : '<td>' + (mc == null ? '—' : fmt(mc) + (u || '')) + '</td>') + '</tr>';
       h += '<h4>Misure</h4><table class="meas auto"><tr><td></td><td><b>' + (photo ? 'Dalla foto' : 'Traccia') + '</b></td>' + (photo ? '' : '<td><b>Elettrocardiografo</b></td>') + '</tr>' +
-        row('FC', R && R.hr, M.fc, ' /min') + row('PR', G.pr, M.pr, ' ms') + row('QRS', G.qrs, M.qrs, ' ms') + row('QT', G.qt, M.qt, ' ms') +
-        row('QTc', null, M.qtc, ' ms') + row('Asse QRS', G.asse, M.assi && M.assi.qrs, '°') + row('Durata P', G.p, M.p, ' ms') + '</table>';
+        row('FC', R && R.hr, M.fc, ' /min') + row(photo ? 'PR (indicativo, non applicato)' : 'PR', G.pr, M.pr, ' ms') + row('QRS', G.qrs, M.qrs, ' ms') + row('QT', G.qt, M.qt, ' ms') +
+        row('QTc', null, M.qtc, ' ms') + row('Asse QRS', G.asse, M.assi && M.assi.qrs, '°') + row(photo ? 'Durata P (indicativa, non applicata)' : 'Durata P', G.p, M.p, ' ms') + '</table>';
+      if (photo && G.qrs != null && G.qrs >= 120) h += '<div class="disclaimer">QRS ' + fmt(G.qrs) + ' ms letto dalla foto: nei tracciati con voltaggi alti o tracce sovrapposte la foto tende a sovrastimarlo. Confrontalo con il valore stampato prima di applicarlo.</div>';
       if (R) h += '<p class="hint">Ritmo (' + esc(R.lead) + '): RR medio ' + fmt(R.rrMean) + ' ms, variabilità ' + fmt(R.rrVar) + ' ms → ' + (isIrregular(R) ? '<b>irregolare</b>' : 'regolare') + '; onde P ' + (R.pPresenti ? 'riconosciute prima di ogni QRS (PR ' + fmt(R.pr) + ' ms)' : '<b>non riconosciute</b> con certezza') + '.</p>';
       h += '<h4>Derivazioni (mm)</h4><div class="lead-table-wrap"><table class="lead-table auto"><tr><th></th><th>R</th><th>S</th><th>ST J</th><th>ST60</th><th>T</th><th>batt.</th></tr>' +
         C.LEADS.map(k => { const l = A.leads[k]; if (!l) return '<tr><td class="ln">' + k + '</td><td colspan="6" class="hint">non letta</td></tr>'; const stc = l.st > 0.05 ? 'pos' : l.st < -0.05 ? 'neg' : ''; return '<tr><td class="ln">' + k + '</td><td>' + fmt(l.R, 1) + '</td><td>' + fmt(l.S, 1) + '</td><td class="' + stc + '">' + fmt(l.st, 1) + '</td><td>' + fmt(l.st60, 1) + '</td><td>' + fmt(l.T, 1) + '</td><td>' + l.n + '</td></tr>'; }).join('') + '</table></div>';
       h += '<p class="hint">Sul tracciato: <span style="color:#16a34a">▬</span> linea di base, <span style="color:#f76b15">●</span> punto J, <span style="color:#e5484d">|</span> onde R della striscia del ritmo. Verifica che siano nei punti giusti.</p>';
-      if (photo) h += '<p class="hint">Le misure stampate dall\'elettrocardiografo (FC, PR, QRS, QT) restano le più affidabili: se le leggi sul foglio, inseriscile nella scheda Ritmo.</p>';
+      if (photo) h += '<p class="hint">Le misure stampate dall\'elettrocardiografo (FC, PR, QRS, QT/QTc, assi) restano le più affidabili: se le leggi sul foglio, inseriscile nella scheda Ritmo. Con voltaggi molto alti (QRS che invadono la riga vicina, tipico dell\'IVS) R e S non sono misurabili dalla foto: misurale con il calibro.</p>';
       h += '<div class="actions"><button class="btn primary" id="autoApply">✅ Applica tutti i valori</button><button class="btn" id="autoApplyLeads">Applica solo le derivazioni</button></div>';
     }
     h += '<div class="actions"><button class="btn sm" id="reportBad">📨 Segnala una lettura errata</button></div>';
@@ -742,7 +743,9 @@
     if (all) {
       const M = A.machine, G = A.glob, R = A.rhythm;
       const pick = (m, g) => m != null ? m : (g != null ? Math.round(g) : null);
-      const iv = { 'intervalli.pr': pick(M.pr, G.pr), 'intervalli.qrs': pick(M.qrs, G.qrs), 'intervalli.qt': pick(M.qt, G.qt), 'intervalli.p': pick(M.p, G.p) };
+      const photo = A.source === 'foto';
+      // dalla foto PR e durata della P non sono abbastanza affidabili: si misurano con il calibro o si copiano dalla stampa
+      const iv = { 'intervalli.pr': photo ? null : pick(M.pr, G.pr), 'intervalli.qrs': pick(M.qrs, G.qrs), 'intervalli.qt': pick(M.qt, G.qt), 'intervalli.p': photo ? null : pick(M.p, G.p) };
       Object.keys(iv).forEach(p => { if (iv[p] != null) setField(p, String(iv[p])); });
       if (R) {
         state.data.ritmo.rrList = (R.rr || []).map(Math.round);
@@ -758,7 +761,8 @@
     // istantanea dei valori proposti: al salvataggio si confrontano con quelli confermati (registro di precisione)
     state.data.autoApplied = { src: A.source, profilo: state.data.tecnica.profilo || 'auto', qualita: A.quality ? A.quality.score : null, quando: new Date().toISOString(), valori: snapshotValues() };
     const noP = all && A.rhythm && !A.rhythm.pPresenti;
-    toast('Valori applicati.' + (noP ? ' Onde P non riconosciute: specificale nella scheda Ritmo.' : ' Completa i pattern morfologici e controlla il referto.'), 5000);
+    const ph = A.source === 'foto';
+    toast('Valori applicati.' + (noP ? ' Onde P non riconosciute: specificale nella scheda Ritmo.' : '') + (ph ? ' PR e durata P non applicati dalla foto: inseriscili dalla stampa dell\'elettrocardiografo o misurali con il calibro.' : ' Completa i pattern morfologici e controlla il referto.'), 6500);
   }
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-pdfpage]'); if (!b || !state.pdfBuf) return;
@@ -827,9 +831,24 @@
   }
 
   /* ---------------- caricamento immagine / PDF ---------------- */
+  // nuovo tracciato: le misure del tracciato precedente non devono "contaminare" il nuovo referto
+  function resetMeasurements() {
+    const d = state.data;
+    const had = ['ritmo', 'intervalli', 'asse', 'atri', 'morfologia', 'leads', 'extra', 'pattern', 'tcl'].some(k => d[k] && Object.keys(d[k]).length);
+    const b = blank();
+    ['ritmo', 'intervalli', 'asse', 'atri', 'morfologia', 'leads', 'extra', 'pattern', 'tcl'].forEach(k => { d[k] = b[k]; });
+    d.cal = null; delete d.autoApplied;
+    d.tecnica = { velocita: d.tecnica.velocita || '25', guadagno: '10', profilo: d.tecnica.profilo || 'auto' };
+    d.id = null; d.creato = null;
+    state.overlay = []; state.auto = null;
+    return had;
+  }
   async function handleFile(file) {
     if (!file) return;
     try {
+      const had = resetMeasurements();
+      renderAllForms();
+      if (had) toast('Nuovo tracciato: misure del tracciato precedente azzerate (dati paziente mantenuti).', 3500);
       let canvas;
       if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
         state.pdfBuf = await file.arrayBuffer();
@@ -1012,7 +1031,7 @@
 
   function newCase() {
     if (!confirm('Iniziare un nuovo ECG? I dati non salvati in archivio andranno persi.')) return;
-    const keep = { velocita: state.data.tecnica.velocita, guadagno: state.data.tecnica.guadagno, profilo: state.data.tecnica.profilo || 'auto' };
+    const keep = { velocita: state.data.tecnica.velocita, guadagno: '10', profilo: state.data.tecnica.profilo || 'auto' };
     state.data = blank(); state.data.tecnica = keep; state.data.operatore = '';
     state.img = null; state.imgUrl = null; state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = [];
     state.overlay = []; state.auto = null; state.pdfBuf = null; state.photoFile = null; renderAuto();
@@ -1058,7 +1077,7 @@
     h += '<div class="card"><h3>Avvertenze</h3><p>ECGcheck legge automaticamente foto e PDF dell\'ECG (visione artificiale sul dispositivo, senza intelligenza artificiale "a scatola nera") e applica criteri ECG pubblicati alle misure. I valori letti sono <b>proposte da verificare</b>: lo ST da foto ha un errore tipico di ±0,2–0,5 mm. <b>Non</b> riproduce l\'algoritmo proprietario Queen of Hearts™ (rete neurale non pubblicata). È uno strumento didattico e di supporto, non un dispositivo medico (MDR 2017/745, AI Act): la diagnosi resta medica.</p><p class="hint">I dati restano sul dispositivo (localStorage/IndexedDB). Non inserire dati identificativi.</p></div>';
     h += '<div class="card"><h3>Precisione della lettura automatica</h3><div id="precView"><p class="hint">Calcolo…</p></div><div class="actions"><button class="btn sm" id="precExport">📤 Esporta registro di precisione</button></div><p class="hint">Il registro (senza dati del paziente né immagini) serve alle revisioni periodiche per correggere e migliorare la lettura automatica.</p></div>';
     h += '<div class="card"><h3>Fonti</h3><ol class="refs">' + M.riferimenti.map(r => '<li>' + esc(r) + '</li>').join('') + '</ol></div>';
-    h += '<div class="card"><h3>Registro modifiche</h3><ul class="refs"><li><b>1.2.0 (01/11/2026)</b> – Lettura automatica delle FOTO: riconoscimento del foglio, orientamento (0/90/180/270°) e raddrizzamento, calibrazione da griglia e impulso di 10 mm, separazione traccia/griglia, inseguimento della traccia, profili apparecchio (ELI 280 6×2, 6×2, 3×4+1, 3×4+3, 3×4, 12×1), indice di qualità con rifiuto delle foto mosse, misure R/S/ST/ST60/T, FC, QRS, QT, asse ai minimi quadrati. Registro di precisione (valori letti vs confermati), segnalazione delle letture errate, revisioni settimanali. Con QRS ≥ 120 ms senza morfologia indicata: avviso che lo ST può essere secondario; "Ritmo a QRS largo" con P non definite declassato ad alto con richiesta di definire le P. Validazione: 4 foto reali ELI 280 (FC ±3/min, QT ±30 ms) e foto simulate (ST errore medio 0,12–0,23 mm).</li><li><b>1.1.0 (31/10/2026)</b> – Lettura automatica degli ECG in PDF (pdf.js integrato, offline): calibrazione da griglia o impulso di taratura, riconoscimento delle derivazioni, R/S/ST/ST60/T per derivazione, ritmo, PR/QRS/QT, lettura delle misure stampate dall\'elettrocardiografo; nuovo reperto "ritmo irregolare senza P definite".</li><li><b>1.0.0 (31/10/2026)</b> – Prima versione: calibro digitale su foto/PDF, motore a regole (ritmo, OMI/STEMI-equivalenti, conduzione SA/AV/IV, asse, camere, pericardite ESC 2025, ripolarizzazione precoce, QT, canalopatie, elettroliti), referto PDF, archivio, revisione programmata.</li></ul></div>';
+    h += '<div class="card"><h3>Registro modifiche</h3><ul class="refs"><li><b>1.2.1 (01/11/2026)</b> – Correzioni dopo segnalazione (ECG con IVS): riconoscimento automatico dello "strain" (ST discendente + T negativa asimmetrica in I, aVL, V4–V6 a R dominante); con IVS lo STE in V1–V3 è valutato con il rapporto STE/S (≥ 25%, Armstrong 2012) e lo STD in V3–V4 a R dominante in continuità con lo strain non attiva più lo STDmax V1–V4 (Meyers 2021: solo STD non spiegato da cause secondarie), con confronto relativo al QRS a parità di STD; QT corto valutato con Bazett e non con il QT modificato per QRS largo; avviso se la frequenza atriale (PP) è incoerente con la FC in conduzione 1:1; avviso per durata P > 160 ms; il caricamento di un nuovo tracciato azzera le misure del precedente (guadagno riportato a 10 mm/mV); dalla foto PR e durata P non vengono più applicati automaticamente.</li><li><b>1.2.0 (01/11/2026)</b> – Lettura automatica delle FOTO: riconoscimento del foglio, orientamento (0/90/180/270°) e raddrizzamento, calibrazione da griglia e impulso di 10 mm, separazione traccia/griglia, inseguimento della traccia, profili apparecchio (ELI 280 6×2, 6×2, 3×4+1, 3×4+3, 3×4, 12×1), indice di qualità con rifiuto delle foto mosse, misure R/S/ST/ST60/T, FC, QRS, QT, asse ai minimi quadrati. Registro di precisione (valori letti vs confermati), segnalazione delle letture errate, revisioni settimanali. Con QRS ≥ 120 ms senza morfologia indicata: avviso che lo ST può essere secondario; "Ritmo a QRS largo" con P non definite declassato ad alto con richiesta di definire le P. Validazione: 4 foto reali ELI 280 (FC ±3/min, QT ±30 ms) e foto simulate (ST errore medio 0,12–0,23 mm).</li><li><b>1.1.0 (31/10/2026)</b> – Lettura automatica degli ECG in PDF (pdf.js integrato, offline): calibrazione da griglia o impulso di taratura, riconoscimento delle derivazioni, R/S/ST/ST60/T per derivazione, ritmo, PR/QRS/QT, lettura delle misure stampate dall\'elettrocardiografo; nuovo reperto "ritmo irregolare senza P definite".</li><li><b>1.0.0 (31/10/2026)</b> – Prima versione: calibro digitale su foto/PDF, motore a regole (ritmo, OMI/STEMI-equivalenti, conduzione SA/AV/IV, asse, camere, pericardite ESC 2025, ripolarizzazione precoce, QT, canalopatie, elettroliti), referto PDF, archivio, revisione programmata.</li></ul></div>';
     h += '<div class="card"><h3>Tema</h3><div class="actions"><button class="btn sm" data-theme-set="">Automatico</button><button class="btn sm" data-theme-set="light">Chiaro</button><button class="btn sm" data-theme-set="dark">Scuro</button></div></div>';
     $('#infoView').innerHTML = h;
     $('#precExport').onclick = exportPrecision;

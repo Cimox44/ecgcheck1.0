@@ -8,8 +8,8 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.2.0',
-    criteriaVersion: '2026.11',
+    version: '1.2.1',
+    criteriaVersion: '2026.11.1',
     lastReview: '2026-11-01',
     nextReview: '2026-11-08',
     riferimenti: [
@@ -36,6 +36,8 @@
       'Surawicz B et al. AHA/ACCF/HRS Recommendations for the standardization and interpretation of the ECG, parts III–VI. JACC 2009',
       'Strauss DG et al. Defining left bundle branch block in the era of CRT. Am J Cardiol 2011;107:927-934',
       'Peguero JG, Lo Presti S et al. ECG criteria for the diagnosis of LVH. JACC 2017;69:1694-1703',
+      'Hancock EW et al. AHA/ACCF/HRS Recommendations for the standardization and interpretation of the ECG. Part V: chamber hypertrophy. Circulation 2009;119:e251-e261',
+      'Armstrong EJ et al. Electrocardiographic criteria for STEMI in patients with left ventricular hypertrophy. Am J Cardiol 2012;110:977-983',
       'Brugada P et al. A new approach to the differential diagnosis of a regular tachycardia with a wide QRS. Circulation 1991;83:1649-1659',
       'Vereckei A et al. New algorithm using only lead aVR for WCT. Heart Rhythm 2008;5:89-98',
       'Moccetti F et al. The Basel algorithm for WCT. JACC Clin Electrophysiol 2022;8:831-839',
@@ -160,6 +162,9 @@
       m.regolaritaAuto = (s.max - s.min) > Math.max(120, 0.15 * s.media) ? 'irregolare' : 'regolare';
     }
     if (m.ppStats && ppList.length >= 3) m.ppVar = m.ppStats.max - m.ppStats.min;
+
+    // coerenza: con conduzione 1:1 la frequenza atriale deve coincidere con quella ventricolare
+    if (m.fcAtriale && m.fc && r.rapportoPQRS === '1:1' && Math.abs(m.fcAtriale - m.fc) > 0.25 * m.fc) m.ppIncoerente = true;
 
     const dep = n(a.ptfDepth), dur = n(a.ptfDur);
     if (dep !== null && dur !== null) m.ptfv1 = Math.abs(dep) * dur / 1000; // mm·s
@@ -298,7 +303,11 @@
             'AHA/ACCF/HRS 2009');
         }
       }
-      if ((m.ppVar && m.ppVar > 120) || r.aritmiaSinusale) {
+      if (m.ppIncoerente) {
+        F.add(CAT.QUALITA, 'pp-incoerente', 'Intervallo PP incoerente con la frequenza cardiaca', LIV.MOD,
+          ['FC atriale ' + r0(m.fcAtriale) + '/min con FC ventricolare ' + r0(m.fc) + '/min e conduzione 1:1: i marker P o il valore PP sono errati (o residui di un tracciato precedente).',
+            'Aritmia sinusale e frequenza atriale non valutate. Ricontrolla i marker P nella scheda ECG.'], '');
+      } else if ((m.ppVar && m.ppVar > 120) || r.aritmiaSinusale) {
         F.add(CAT.RITMO, 'aritmia-sin', 'Aritmia sinusale', LIV.NORM,
           ['Variazione dei cicli PP' + (m.ppVar ? ' di ' + r0(m.ppVar) + ' ms' : '') + ' (> 120 ms o > 10%).'], 'AHA/ACCF/HRS 2009');
       }
@@ -627,6 +636,8 @@
           'AHA/ACCF/HRS 2009');
       }
       const lae = [];
+      if (m.p !== null && m.p > 160) F.add(CAT.QUALITA, 'p-insolita', 'Durata dell\'onda P insolita (' + r0(m.p) + ' ms)', LIV.INFO,
+        ['Valori > 160 ms sono rari: verificare la misura (inizio/fine della P) prima di diagnosticare anomalia atriale o blocco interatriale.'], '');
       if (m.p !== null && m.p >= 120) lae.push('durata P ' + r0(m.p) + ' ms (≥ 120)');
       if (m.ptfv1 !== undefined && m.ptfv1 >= 0.04) lae.push('PTFV1 ' + f2(m.ptfv1) + ' mm·s (≥ 0,04)');
       if (a.pNotch) lae.push('P bifida in II ("P mitrale")');
@@ -669,13 +680,23 @@
         const sog = sesso === 'F' ? 23 : 28;
         if (plp >= sog) crit.push('Peguero-Lo Presti S più profonda (' + deepLead + ') + SV4 = ' + f1(plp) + ' mm (≥ ' + sog + ')');
       }
+      // pattern "strain": ST sottoslivellato discendente con T negativa asimmetrica nelle derivazioni a R dominante (I, aVL, V4–V6)
+      const strainLeads = ['I', 'aVL', 'V4', 'V5', 'V6'].filter(l => st(d, l) !== null && st(d, l) <= -0.5 && amp(d, l, 't') !== null && amp(d, l, 't') <= -1 && (amp(d, l, 'r') || 0) > (amp(d, l, 's') || 0));
+      const strain = !!(d.pattern && d.pattern.strain) || (strainLeads.length >= 2 && strainLeads.some(l => ['V5', 'V6'].includes(l)));
+      ctx.strain = strain; ctx.strainLeads = strainLeads;
       if (crit.length) {
         ctx.lvh = true;
         const det = ['Criteri positivi: ' + crit.join('; ') + '.'];
         if (eta !== null && eta < 35) det.push('Età < 35 anni: i criteri di voltaggio hanno bassa specificità.');
-        if (d.pattern && d.pattern.strain) det.push('Pattern "strain" (ST discendente con T asimmetrica negativa in V5–V6, I, aVL): sovraccarico.');
-        F.add(CAT.CAMERE, 'ivs', 'Ipertrofia ventricolare sinistra (criteri ECG)', LIV.MOD, det,
-          'Peguero-Lo Presti JACC 2017; AHA/ACCF/HRS 2009', 'Confermare con ecocardiogramma; l\'IVS può simulare/mascherare ischemia (ST secondario).');
+        if (strain) det.push('Pattern "strain"' + (strainLeads.length ? ' in ' + strainLeads.join(', ') : '') + ': ST discendente con T negativa asimmetrica nelle derivazioni a R dominante (alterazioni secondarie della ripolarizzazione).');
+        F.add(CAT.CAMERE, 'ivs', strain ? 'Ipertrofia ventricolare sinistra con alterazioni della ripolarizzazione ("strain")' : 'Ipertrofia ventricolare sinistra (criteri ECG)', LIV.MOD, det.concat(strain ? ['Lo strain si associa a maggiore massa ventricolare e a prognosi peggiore; ST e T sono discordanti al QRS (secondari).'] : []),
+          'Hancock EW et al. AHA/ACCF/HRS 2009 (parte V); Peguero-Lo Presti JACC 2017', 'Confermare con ecocardiogramma; l\'IVS può simulare/mascherare ischemia (ST secondario): confrontare con ECG precedenti.');
+      } else if (strain && strainLeads.length) {
+        ctx.strainNoVolt = true;
+        F.add(CAT.RIPOL, 'strain-novolt', 'Sottoslivellamento ST con T negativa asimmetrica laterale (pattern tipo "strain")', LIV.MOD,
+          ['ST discendente con T negativa in ' + strainLeads.join(', ') + ' (derivazioni a R dominante).',
+            'DD: IVS (i criteri di voltaggio hanno sensibilità < 50%: verificare R e S, anche se le tracce si sovrappongono), ischemia subendocardica, digitale, cardiomiopatia ipertrofica.'],
+          'Hancock EW et al. AHA/ACCF/HRS 2009 (parte V)', 'Confrontare con ECG precedenti, troponina se clinica compatibile, ecocardiogramma.');
       }
     }
 
@@ -688,7 +709,11 @@
       if ((SV5 !== null && SV5 >= 7) || (SV6 !== null && SV6 >= 7)) c.push('S in V5 o V6 ≥ 7 mm');
       if (RV1 !== null && (SV5 !== null || SV6 !== null) && RV1 + Math.max(SV5 || 0, SV6 || 0) > 10.5) c.push('RV1 + SV5/V6 > 10,5 mm');
       if (m.asse !== undefined && m.asse !== null && m.asse >= 110 && m.asse <= 180) c.push('asse ≥ +110°');
-      if (c.length >= 2) {
+      if (c.length >= 2 && ctx.lvh) {
+        F.add(CAT.CAMERE, 'ivd-poss', 'Possibile ipertrofia biventricolare (criteri di IVD in presenza di IVS)', LIV.INFO,
+          ['Criteri di IVD: ' + c.join('; ') + '.', 'Con IVS i criteri di IVD hanno bassa sensibilità e specificità: confermare con ecocardiogramma; verificare che le S in V5–V6 non siano misure errate (tracce sovrapposte).'],
+          'Hancock EW et al. AHA/ACCF/HRS 2009 (parte V)');
+      } else if (c.length >= 2) {
         ctx.rvhProbabile = true;
         F.add(CAT.CAMERE, 'ivd', 'Ipertrofia ventricolare destra probabile', LIV.MOD, ['Criteri: ' + c.join('; ') + '.', 'DD della R dominante in V1: IM posteriore, BBDx, WPW, cardiomiopatia ipertrofica, destrocardia.'], 'AHA/ACCF/HRS 2009');
       } else if (c.length === 1) {
@@ -801,12 +826,29 @@
       const coppie = CONTIG.filter(c => steOK.includes(c[0]) && steOK.includes(c[1]));
       const leadsStemi = Array.from(new Set([].concat.apply([], coppie)));
       const stdLeads = LEADS.filter(l => l !== 'aVR' && stv[l] !== null && stv[l] <= -0.5);
-      if (leadsStemi.length) {
+      // IVS: STE in V1–V3 discordante a S profonde è atteso; ischemico se STE/S ≥ 25% (Armstrong 2012)
+      let lvhSte = null;
+      if (leadsStemi.length && ctx.lvh && leadsStemi.every(l => ['V1', 'V2', 'V3'].includes(l))) {
+        const rat = leadsStemi.map(l => { const S = amp(d, l, 's'); return S ? { l, r: stv[l] / S, S } : null; });
+        if (rat.every(x => x)) {
+          const mx = rat.reduce((a, b) => b.r > a.r ? b : a);
+          lvhSte = { ok: mx.r >= 0.25, txt: rat.map(x => x.l + ' ' + f1(stv[x.l]) + '/' + f1(x.S) + ' mm = ' + r0(x.r * 100) + '%').join(', ') };
+        }
+      }
+      if (lvhSte && !lvhSte.ok) {
+        F.add(CAT.OMI, 'ste-ivs', 'Sopraslivellamento ST in V1–V3 proporzionato alla IVS (non criteri di STEMI)', LIV.MOD,
+          ['STE discordante alle onde S profonde: rapporto STE/S ' + lvhSte.txt + ' (tutti < 25%).',
+            'Nell\'IVS lo STE in V1–V3 è atteso; il rapporto STE/S ≥ 25% identifica meglio l\'occlusione (Armstrong 2012).'],
+          'Armstrong EJ et al. Am J Cardiol 2012;110:977-83; ESC 2023 ACS', 'Se clinica compatibile: ECG seriati, confronto con ECG precedenti, troponina, ecocardiogramma.');
+      }
+      if (leadsStemi.length && !(lvhSte && !lvhSte.ok)) {
         const terr = territorioDi(leadsStemi);
         const det = ['Sopraslivellamento ST al punto J in derivazioni contigue: ' + leadsStemi.map(l => l + ' ' + f1(stv[l]) + ' mm').join(', ') + '.',
           'Soglie: ≥ 1 mm in tutte le derivazioni; in V2–V3 ≥ 2 mm (uomini ≥ 40 a), ≥ 2,5 mm (uomini < 40 a), ≥ 1,5 mm (donne).' + (!sesso ? ' Sesso non indicato: applicata soglia maschile ≥ 40 a.' : ''),
           'Territorio: ' + terr.join(', ') + '.'];
         if (stdLeads.length) det.push('Sottoslivellamento reciproco in ' + stdLeads.join(', ') + ' (aumenta la specificità per IMA vs mimics).');
+        if (lvhSte && lvhSte.ok) det.push('IVS presente: rapporto STE/S ' + lvhSte.txt + ' (≥ 25% → sproporzionato, Armstrong 2012).');
+        else if (ctx.lvh) det.push('IVS presente: parte dello STE può essere secondario; valutare il rapporto STE/S (≥ 25% in V1–V3) e il confronto con ECG precedenti.');
         if (terr.includes('inferiore')) {
           if (stv.III !== null && stv.II !== null && stv.III > stv.II) det.push('STE III > II: probabile occlusione della coronaria destra.');
           const v4r = n(ex.stV4R);
@@ -837,13 +879,28 @@
         const lat = ['V5', 'V6'].filter(l => stv[l] !== null).map(l => stv[l]);
         const maxLat = lat.length ? Math.min.apply(null, lat.concat([0])) : 0;
         const leadMax = stdAnt.find(l => stv[l] === maxAnt);
-        if (maxAnt <= -0.5 && maxAnt < maxLat && !F.has('stemi') ) {
+        // a parità (< 0,5 mm) si confronta lo STD relativo al QRS (Meyers 2021)
+        const rel = l => { const q = Math.max(amp(d, l, 'r') || 0, amp(d, l, 's') || 0); return q > 0 ? -stv[l] / q : null; };
+        let antWins = maxAnt < maxLat;
+        const latLead = ['V5', 'V6'].filter(l => stv[l] !== null).sort((a, b) => stv[a] - stv[b])[0];
+        if (antWins && latLead && maxLat < 0 && maxLat - maxAnt < 0.5 && rel(leadMax) !== null && rel(latLead) !== null && rel(latLead) >= rel(leadMax)) antWins = false;
+        // IVS / strain: STD in una derivazione a R dominante è discordante e atteso (secondario)
+        const rDom = (amp(d, leadMax, 'r') || 0) > (amp(d, leadMax, 's') || 0);
+        const secondario = (ctx.lvh || ctx.strain || ctx.strainNoVolt) && rDom && (leadMax === 'V4' || leadMax === 'V3') &&
+          (ctx.strainLeads || []).some(l => ['V5', 'V6'].includes(l));
+        if (maxAnt <= -0.5 && antWins && secondario && !F.has('stemi')) {
+          F.add(CAT.OMI, 'std-ivs', 'Sottoslivellamento ST in ' + leadMax + ' compatibile con strain da IVS (STDmax V1–V4 non applicabile)', LIV.MOD,
+            ['STD ' + f1(maxAnt) + ' mm in ' + leadMax + ' (R dominante) in continuità con lo strain di ' + ctx.strainLeads.join(', ') + ': ST discordante al QRS, secondario.',
+              'Meyers 2021 considera ischemico lo STDmax V1–V4 solo se non spiegato da cause secondarie (IVS, BBDx, ritmo stimolato…).',
+              'Sospetto ischemico se lo STD compare in V1–V3 a QRS negativo (concordante) o se è nuovo rispetto agli ECG precedenti.'],
+            'Meyers HP et al. JAHA 2021; Hancock EW et al. AHA/ACCF/HRS 2009', 'Confronto con ECG precedenti e troponina se clinica compatibile.');
+        } else if (maxAnt <= -0.5 && antWins && !F.has('stemi') ) {
           F.add(CAT.OMI, 'stdmax-v14', 'STEMI-equivalente: OMI posteriore (sottoslivellamento ST massimo in V1–V4)', LIV.CRIT,
             ['Sottoslivellamento ST massimo in ' + leadMax + ' (' + f1(maxAnt) + ' mm), maggiore che in V5–V6.',
               'STDmax V1–V4 ischemico: specificità 97% per OMI (Meyers 2021); spesso R prominente e T positive in V2–V3.',
-              ctx.rbbb || wideUndef ? 'ATTENZIONE: con BBDx/QRS largo un ST negativo in V1–V3 può essere secondario; considerare ischemico solo se sproporzionato.' : 'Registrare V7–V9 (≥ 0,5 mm) — un risultato negativo non esclude.'],
+              ctx.rbbb || wideUndef ? 'ATTENZIONE: con BBDx/QRS largo un ST negativo in V1–V3 può essere secondario; considerare ischemico solo se sproporzionato.' : ctx.lvh ? 'IVS presente: in V1–V3 (QRS negativo) lo ST atteso è sopraslivellato; uno STD concordante è sospetto per ischemia.' : 'Registrare V7–V9 (≥ 0,5 mm) — un risultato negativo non esclude.'],
             'Meyers HP et al. JAHA 2021; ACC 2022 ECDP; ESC 2023 ACS', 'Trattare come OMI fino a prova contraria in presenza di sintomi compatibili.', 'omi');
-        } else if (maxAnt <= -0.5 && maxAnt < maxLat && F.has('stemi')) {
+        } else if (maxAnt <= -0.5 && antWins && F.has('stemi')) {
           F.list.find(f => f.id === 'stemi').dettagli.push('STD massimo in V1–V4: estensione posteriore.');
         }
       }
@@ -885,7 +942,8 @@
           'ESC 2023 ACS; IV UDMI 2018', 'Strategia invasiva immediata (< 2 h) se instabile o dolore refrattario (ESC 2023). Ricercare cause di mismatch (anemia, ipotensione, tachiaritmia).', 'nstemi');
       } else if (std1.length >= 2) {
         const cont = CONTIG.some(c => std1.includes(c[0]) && std1.includes(c[1]));
-        if (cont && !F.has('stdmax-v14') && !F.has('stemi')) {
+        const soloStrain = (ctx.strain || ctx.strainNoVolt) && std1.every(l => (ctx.strainLeads || []).includes(l) || l === 'V4' || l === 'V3');
+        if (cont && !F.has('stdmax-v14') && !F.has('stemi') && !soloStrain) {
           F.add(CAT.OMI, 'std', 'Sottoslivellamento ST di tipo ischemico', LIV.ALTO,
             ['STD ≥ 1 mm in ' + std1.join(', ') + '.' + (ctx.lvh ? ' Possibile componente secondaria a IVS.' : ''),
               'Se massimo in V1–V4 valutare OMI posteriore; se diffuso e massimo in V4–V6/II considerare ischemia subendocardica.'],
@@ -895,7 +953,8 @@
 
       // Inversione T
       const tInv = LEADS.filter(l => l !== 'aVR' && l !== 'III' && l !== 'V1' && amp(d, l, 't') !== null && amp(d, l, 't') <= -1 && (amp(d, l, 'r') || 0) >= (amp(d, l, 's') || 0));
-      if (tInv.length >= 2 && CONTIG.some(c => tInv.includes(c[0]) && tInv.includes(c[1])) && !ctx.rbbb) {
+      const tStrain = (ctx.strain || ctx.strainNoVolt) && tInv.every(l => (ctx.strainLeads || []).includes(l) || l === 'V4');
+      if (tInv.length >= 2 && CONTIG.some(c => tInv.includes(c[0]) && tInv.includes(c[1])) && !ctx.rbbb && !tStrain) {
         F.add(CAT.RIPOL, 't-inv', 'Inversione dell\'onda T', LIV.MOD,
           ['T negativa ≥ 1 mm in ' + tInv.join(', ') + ' con R prominente.', 'DD: ischemia/riperfusione (Wellens), IVS/strain, cardiomiopatia, EP, pattern giovanile, memoria cardiaca, emorragia cerebrale.'],
           'IV UDMI 2018');
@@ -1098,9 +1157,9 @@
         'ESC 2022 VA', 'ECG seriati, test genetico se sospetto congenito.');
     } else if (qtc >= lim) {
       F.add(CAT.QT, 'qt-lungo', 'QTc prolungato', LIV.MOD, det.concat(['Soglia ≥ ' + lim + ' ms (' + (sesso === 'F' ? 'donne' : 'uomini') + ').']), 'AHA/ACCF/HRS 2009');
-    } else if (qtc <= 320) {
+    } else if ((m.qtcBazett || qtc) <= 320 && !m.qtcModificato) {
       F.add(CAT.QT, 'sqts-forte', 'Sospetta sindrome del QT corto (QTc ≤ 320 ms)', LIV.ALTO, det, 'ESC 2022 VA', 'Escludere ipercalcemia, digitale, acidosi, ipertermia; consulenza aritmologica.');
-    } else if (qtc <= 360) {
+    } else if ((m.qtcBazett || qtc) <= 360 && !m.qtcModificato) {
       F.add(CAT.QT, 'sqts', 'QT corto: sospetta sindrome del QT corto', LIV.ALTO,
         det.concat(['ESC 2022: SQTS con QTc ≤ 360 ms + ≥ 1 tra variante patogena, familiarità per SQTS, sopravvivenza a TV/FV senza cardiopatia.']), 'ESC 2022 VA');
     } else {
