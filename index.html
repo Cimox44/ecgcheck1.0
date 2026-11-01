@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ECGcheck</title>
+  <meta name="description" content="Analisi ECG assistita a regole: aritmie, STEMI, OMI, STEMI-equivalenti, blocchi, ipertrofie, pericardite. Strumento didattico.">
+  <meta name="theme-color" content="#0e1726">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" width="30" height="30" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#e5484d"/><path d="M6 36h12l5-12 7 24 6-30 6 18h16" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><b>ECGcheck</b><small id="verLbl"></small></div>
+    </div>
+    <button id="statusChip" class="chip" data-goto="ref" aria-label="Esito OMI">OMI —</button>
+    <button id="menuBtn" class="icon-btn" aria-label="Menu">☰</button>
+  </header>
+
+  <div id="reviewBanner" class="banner hidden"></div>
+  <div id="updateToast" class="toast hidden"><span>Nuova versione disponibile</span><button id="updateBtn" class="btn sm primary">Aggiorna</button></div>
+  <div id="msgToast" class="toast hidden"></div>
+
+  <main>
+    <!-- ======================= ECG ======================= -->
+    <section id="tab-ecg" class="tab active">
+      <div class="card">
+        <div class="row2">
+          <label class="btn primary file">📷 Fotografa ECG<input type="file" accept="image/*" capture="environment" id="fileCam"></label>
+          <label class="btn file">📂 Carica PDF / immagine<input type="file" accept="image/*,application/pdf" id="fileUp"></label>
+        </div>
+        <p class="hint"><b>Foto</b> e <b>PDF</b> vengono letti automaticamente (calibrazione, derivazioni, ST, intervalli): controlla i punti sul tracciato e premi «Applica». Per una buona foto: foglio piatto, telefono parallelo al foglio, tutto il foglio inquadrato, buona luce senza flash, telefono fermo. Se la lettura non riesce, usa <b>Calibra</b> e <b>Calibro</b>.</p>
+      </div>
+
+      <div class="card viewer-card">
+        <div class="toolbar" id="toolbar">
+          <button class="tool active" data-mode="pan" title="Sposta / zoom">✋<span>Sposta</span></button>
+          <button class="tool" data-mode="cal" title="Calibra sulla griglia">📏<span>Calibra</span></button>
+          <button class="tool" data-mode="mis" title="Calibro">⏱<span>Calibro</span></button>
+          <button class="tool" data-mode="r" title="Segna onde R">R<span>Marca R</span></button>
+          <button class="tool" data-mode="p" title="Segna onde P">P<span>Marca P</span></button>
+        </div>
+        <div class="toolbar sub">
+          <button class="tool" id="zoomIn" title="Ingrandisci">＋</button>
+          <button class="tool" id="zoomOut" title="Riduci">－</button>
+          <button class="tool" id="fitBtn" title="Adatta">⤢</button>
+          <button class="tool" id="rotBtn" title="Ruota 90°">⟳</button>
+          <button class="tool" id="enhBtn" title="Migliora contrasto">🌓</button>
+          <button class="tool" id="undoBtn" title="Annulla ultimo punto">↶</button>
+          <button class="tool" id="clearBtn" title="Cancella segni">🧹</button>
+        </div>
+        <div class="canvas-wrap" id="cvWrap">
+          <canvas id="cv"></canvas>
+          <div id="cvEmpty" class="cv-empty">Nessun ECG caricato<br><small>Usa i pulsanti sopra</small></div>
+        </div>
+        <div id="toolPanel" class="tool-panel"></div>
+      </div>
+
+      <div class="card hidden" id="autoCard"></div>
+
+      <div class="card">
+        <h3>Registrazione</h3>
+        <div class="grid2" id="formTecnica"></div>
+        <p class="hint" id="calStatus">Non calibrato.</p>
+      </div>
+
+      <div class="card">
+        <h3>Paziente e contesto</h3>
+        <p class="hint">Non inserire nome e cognome: usa un codice o le iniziali (privacy).</p>
+        <div class="grid2" id="formPaziente"></div>
+      </div>
+    </section>
+
+    <!-- ======================= RITMO ======================= -->
+    <section id="tab-ritmo" class="tab"><div id="formRitmo"></div></section>
+
+    <!-- ======================= DERIVAZIONI ======================= -->
+    <section id="tab-der" class="tab">
+      <div class="card">
+        <h3>Ampiezze per derivazione (mm, 10 mm/mV)</h3>
+        <p class="hint">R e S in valore assoluto. ST misurato al punto J rispetto al PR/TP (positivo = sopra, negativo = sotto). T con segno. Lascia vuoto ciò che non hai misurato. Usa ± per cambiare il segno.</p>
+        <div class="lead-table-wrap"><table class="lead-table" id="leadTable"></table></div>
+      </div>
+      <div class="card"><h3>Derivazioni aggiuntive e misure OMI</h3><div class="grid2" id="formExtra"></div></div>
+    </section>
+
+    <!-- ======================= PATTERN ======================= -->
+    <section id="tab-pat" class="tab"><div id="formPattern"></div></section>
+
+    <!-- ======================= REFERTO ======================= -->
+    <section id="tab-ref" class="tab">
+      <div id="reportView"></div>
+      <div class="card no-print">
+        <h3>Note e firma</h3>
+        <div class="grid1" id="formNote"></div>
+        <div class="actions">
+          <button class="btn primary" id="pdfBtn">📄 Crea PDF</button>
+          <button class="btn" id="shareBtn">📤 Invia / Condividi</button>
+          <button class="btn" id="printBtn">🖨 Stampa</button>
+          <button class="btn" id="saveBtn">💾 Salva in archivio</button>
+          <button class="btn danger" id="newBtn">＋ Nuovo ECG</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= ARCHIVIO ======================= -->
+    <section id="tab-arch" class="tab">
+      <div class="card"><h3>Archivio locale</h3><p class="hint">I referti restano solo su questo dispositivo.</p><div id="archList"></div></div>
+    </section>
+
+    <!-- ======================= CATALOGO ======================= -->
+    <section id="tab-cat" class="tab"><div id="catView"></div></section>
+
+    <!-- ======================= INFO ======================= -->
+    <section id="tab-info" class="tab"><div id="infoView"></div></section>
+  </main>
+
+  <nav class="bottomnav" id="bottomnav">
+    <button data-tab="ecg" class="active"><span>📈</span>ECG</button>
+    <button data-tab="ritmo"><span>💓</span>Ritmo</button>
+    <button data-tab="der"><span>▦</span>Derivazioni</button>
+    <button data-tab="pat"><span>🔍</span>Pattern</button>
+    <button data-tab="ref"><span>📋</span>Referto<i id="critBadge" class="badge hidden">0</i></button>
+  </nav>
+
+  <div id="menu" class="sheet hidden" role="dialog" aria-label="Menu">
+    <div class="sheet-body">
+      <button data-goto="arch">🗂 Archivio referti</button>
+      <button data-goto="cat">✅ Diagnosi supportate</button>
+      <button data-goto="info">ℹ️ Criteri, fonti e revisioni</button>
+      <button id="menuNew">＋ Nuovo ECG</button>
+      <button id="menuClose" class="muted">Chiudi</button>
+    </div>
+  </div>
+
+  <script src="criteria.js"></script>
+  <script src="minipdf.js"></script>
+  <script src="ecgpdf.js"></script>
+  <script src="ecgphoto.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
