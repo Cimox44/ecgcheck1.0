@@ -1,4 +1,4 @@
-# ECGcheck 1.2 — Analisi ECG assistita (PWA)
+# ECGcheck 1.2.3 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -82,10 +82,23 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 ## Revisioni a breve termine
 
 - Revisione **settimanale** programmata (lunedì): criteri, linee guida nuove, test automatici
-  (37 casi del motore dei criteri, PDF sintetici, foto sintetiche ruotate/prospettiche/sfocate), correzioni.
+  (47 casi del motore dei criteri, PDF sintetici, 19 foto sintetiche ELI 280 6×2 e 3×4+1 ruotate/prospettiche/
+  sfocate/rumorose/JPEG a 5–8 px/mm e FC 50–130/min), correzioni.
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Ultima revisione — 1.2.3 (02/11/2026)
+
+| Area | Modifica |
+|---|---|
+| Foto – ampiezze | Apice delle R/S alte non più troncato (errore medio R 0,46 → 0,10 mm) |
+| Foto – QRS | Durata non più allargata dalla media mobile (QRS 90 ms: 108–114 → 100–106 ms) |
+| Foto – righe | Righe trovate anche a ~6 px/mm con bordo del foglio su fondo scuro; righe piatte scartate |
+| Foto – qualità | Con derivazioni mancanti la qualità non può essere "buona" |
+| QT | Tangente limitata alla branca discendente della T; avviso con FC > 120/min (P sulla T) |
+| PDF | Senza etichette e con profilo ELI 280/6×2: righe continue divise in periferica + precordiale |
+| Criteri | V Definizione Universale di IMA 2026 nei riferimenti; ERC 2025 per iperkaliemia/FV |
 
 ## Privacy
 

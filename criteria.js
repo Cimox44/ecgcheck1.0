@@ -1,19 +1,20 @@
 /* =====================================================================
    ECGcheck — Motore dei criteri ECG (rule-based, letteratura validata)
    Strumento DIDATTICO / di supporto. NON è un dispositivo medico.
-   Ogni regola riporta la fonte. Revisione programmata mensile.
+   Ogni regola riporta la fonte. Revisione programmata settimanale.
    ===================================================================== */
 (function (root) {
   'use strict';
 
   const META = {
     app: 'ECGcheck',
-    version: '1.2.2',
-    criteriaVersion: '2026.11.1',
-    lastReview: '2026-11-01',
-    nextReview: '2026-11-08',
+    version: '1.2.3',
+    criteriaVersion: '2026.11.2',
+    lastReview: '2026-11-02',
+    nextReview: '2026-11-09',
     riferimenti: [
-      'Thygesen K et al. Fourth Universal Definition of Myocardial Infarction (2018). Eur Heart J 2019;40:237-269',
+      'Mills NL, Newby LK, Zaman S et al. Fifth Universal Definition of Myocardial Infarction (2026). ESC/ACC/AHA/WHF. Eur Heart J 2026;47:5911-5958 (online 28/08/2026), doi:10.1093/eurheartj/ehag101',
+      'Thygesen K et al. Fourth Universal Definition of Myocardial Infarction (2018). Eur Heart J 2019;40:237-269 (soglie ECG di STE utilizzate dal motore)',
       'Byrne RA et al. 2023 ESC Guidelines for the management of acute coronary syndromes. Eur Heart J 2023;44:3720-3826',
       '2025 ACC/AHA/ACEP/NAEMSP/SCAI Guideline for the Management of Acute Coronary Syndromes',
       'Kontos MC et al. 2022 ACC Expert Consensus Decision Pathway on Acute Chest Pain in the ED (STEMI-equivalenti). JACC 2022',
@@ -44,7 +45,8 @@
       'Pava LF et al. R-wave peak time at DII for VT. Heart Rhythm 2010;7:922-926',
       'Bayés de Luna A et al. Interatrial blocks: consensus report. J Electrocardiol 2012;45:445-451',
       'Corrado D et al. Padua criteria for arrhythmogenic cardiomyopathy. Int J Cardiol 2020;319:106-114',
-      'Sagie A et al. Framingham QT correction formula. Am J Cardiol 1992;70:797-801'
+      'Sagie A et al. Framingham QT correction formula. Am J Cardiol 1992;70:797-801',
+      'European Resuscitation Council Guidelines 2025 (Executive Summary; Special Circumstances – iperkaliemia). Resuscitation 2025'
     ]
   };
 
@@ -189,7 +191,7 @@
       ctx.ritmo = 'fv';
       F.add(CAT.RITMO, 'fv', 'Fibrillazione ventricolare', LIV.CRIT,
         ['Attività elettrica caotica senza QRS identificabili.'],
-        'ERC/ESC 2022', 'Arresto cardiaco: defibrillazione immediata secondo algoritmo ALS.', 'arresto');
+        'ERC 2025; ESC 2022 VA', 'Arresto cardiaco: defibrillazione immediata secondo algoritmo ALS.', 'arresto');
       return;
     }
     if (r.torsione) {
@@ -845,7 +847,8 @@
         const terr = territorioDi(leadsStemi);
         const det = ['Sopraslivellamento ST al punto J in derivazioni contigue: ' + leadsStemi.map(l => l + ' ' + f1(stv[l]) + ' mm').join(', ') + '.',
           'Soglie: ≥ 1 mm in tutte le derivazioni; in V2–V3 ≥ 2 mm (uomini ≥ 40 a), ≥ 2,5 mm (uomini < 40 a), ≥ 1,5 mm (donne).' + (!sesso ? ' Sesso non indicato: applicata soglia maschile ≥ 40 a.' : ''),
-          'Territorio: ' + terr.join(', ') + '.'];
+          'Territorio: ' + terr.join(', ') + '.',
+          'V Definizione Universale (2026): l\'IM è ora classificato come primario, secondario o correlato a procedura; le soglie di STE applicate sono quelle della IV UDMI (verifica del capitolo ECG della V UDMI sul testo integrale in corso).'];
         if (stdLeads.length) det.push('Sottoslivellamento reciproco in ' + stdLeads.join(', ') + ' (aumenta la specificità per IMA vs mimics).');
         if (lvhSte && lvhSte.ok) det.push('IVS presente: rapporto STE/S ' + lvhSte.txt + ' (≥ 25% → sproporzionato, Armstrong 2012).');
         else if (ctx.lvh) det.push('IVS presente: parte dello STE può essere secondario; valutare il rapporto STE/S (≥ 25% in V1–V3) e il confronto con ECG precedenti.');
@@ -861,7 +864,7 @@
           det.push('STE in aVL con sottoslivellamento inferiore: occlusione prossimale della IVA (prima di D1).');
         }
         F.add(CAT.OMI, 'stemi', 'STEMI (criteri della IV Definizione Universale di IMA)', LIV.CRIT, det,
-          'IV UDMI 2018; ESC 2023 ACS; ACC/AHA 2025 ACS', 'Attivare la rete STEMI: angioplastica primaria (obiettivo diagnosi→filo ≤ 90 min ESC 2023).', 'omi');
+          'IV UDMI 2018; V UDMI 2026; ESC 2023 ACS; ACC/AHA 2025 ACS', 'Attivare la rete STEMI: angioplastica primaria (obiettivo diagnosi→filo ≤ 90 min ESC 2023).', 'omi');
       }
 
       // Posteriore (V7–V9)
@@ -1115,7 +1118,7 @@
       const sev = p.sineWave || (m.qrs && m.qrs >= 120) ? LIV.CRIT : LIV.ALTO;
       F.add(CAT.RIPOL, 'iperk', 'Pattern di iperkaliemia', sev,
         ['T appuntite, strette e simmetriche' + (m.qrs && m.qrs >= 120 ? '; QRS allargato' : '') + (p.sineWave ? '; onda sinusoidale (pre-arresto)' : '') + '.', 'Sequenza: T appuntite → P appiattite/PR lungo → QRS largo → onda sinusoidale → FV/asistolia.'],
-        'ERC 2021; KDIGO', 'Dosare K+; calcio gluconato/cloruro EV se alterazioni ECG, insulina-glucosio, salbutamolo.');
+        'ERC 2025 (circostanze speciali); KDIGO', 'Dosare K+; calcio gluconato/cloruro EV se alterazioni ECG, insulina-glucosio, salbutamolo.');
     }
     if (p.ondeU) F.add(CAT.RIPOL, 'ipok', 'Onde U prominenti (ipokaliemia possibile)', LIV.MOD,
       ['Onde U ≥ 1 mm, T appiattite, STD; QT apparentemente lungo (in realtà QU).'], 'AHA/ACCF/HRS 2009', 'Dosare K+ e Mg2+; nel cardiochirurgico mantenere K+ 4–5 mmol/L.');
@@ -1185,12 +1188,12 @@
 
     if (c.postCCH) {
       F.add(CAT.CONTESTO, 'post-cch', 'Contesto post-cardiochirurgico', LIV.INFO, [
-        'STE diffuso: frequente pericardite post-pericardiotomica, ma l\'IM tipo 5 (UDMI 2018) richiede troponina > 10 × URL più nuove onde Q/nuovo BBS, occlusione di graft/nativa o nuova perdita di miocardio vitale.',
+        'STE diffuso: frequente pericardite post-pericardiotomica, ma l\'IM tipo 5 (IV UDMI 2018) richiede troponina > 10 × URL più nuove onde Q/nuovo BBS, occlusione di graft/nativa o nuova perdita di miocardio vitale. La V UDMI (2026) lo riclassifica come «IM correlato a procedura»: verificare i criteri biochimici aggiornati sul testo integrale prima di applicarli.',
         'STE localizzato in un territorio coronarico, reciprocità o nuova acinesia → sospetta occlusione/spasmo di graft: discutere subito con il cardiochirurgo.',
         'Dopo chirurgia valvolare (soprattutto aortica/mitralica) attenzione a nuovi BAV e BBS.',
         'FA post-operatoria: picco 2°–4° giorno.',
         'Bassi voltaggi + alternanza + ipotensione → tamponamento.'
-      ], 'IV UDMI 2018; ESC 2024 FA');
+      ], 'IV UDMI 2018; V UDMI 2026; ESC 2024 FA');
       ctx.postCCH = true;
     }
     const fe = n(d.fevs);
@@ -1268,7 +1271,7 @@
       ['Complessi prematuri sopraventricolari / ventricolari', 'moderato'], ['TV non sostenuta', 'alto']
     ]],
     ['Infarto miocardico / OMI (modello "Queen of Hearts"-like, a regole)', [
-      ['STEMI (IV Definizione Universale, soglie per sesso/età)', 'critico'], ['STEMI posteriore V7–V9', 'critico'],
+      ['STEMI (IV Definizione Universale, soglie per sesso/età; V UDMI 2026 in verifica)', 'critico'], ['STEMI posteriore V7–V9', 'critico'],
       ['STEMI-equivalente: OMI posteriore (STDmax V1–V4)', 'critico'], ['STEMI-equivalente: de Winter', 'critico'],
       ['STEMI-equivalente: T iperacute', 'critico'], ['STEMI-equivalente: Smith-modified Sgarbossa (BBS / stimolato)', 'critico'],
       ['Algoritmo di Barcellona (BBS)', 'critico'], ['Pattern di Aslanger', 'critico'], ['OMI inferiore con reciprocità aVL', 'critico'],

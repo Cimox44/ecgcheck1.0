@@ -256,7 +256,8 @@
   }
   function slope(s, i) { return (s[Math.min(s.length - 1, i + 1)] - s[Math.max(0, i - 1)]) / 2; }
 
-  function measureBeat(s, c, prevC, nextC, raw) {
+  function measureBeat(s, c, prevC, nextC, raw, cut) {
+    cut = cut || 0; // campioni da togliere per lato alla durata del QRS (allargamento da media mobile, foto)
     const n = s.length;
     raw = raw || s;
     let maxSl = 0;
@@ -302,10 +303,16 @@
     if (tI !== null && Math.abs(tV) > 0.3) {
       let kk = tI, best = 0;
       const tTanLim = Math.min(tEndLim, tI + 100);
-      for (let k = tI + 1; k <= tTanLim; k++) { const sl = slope(s, k); if ((tV > 0 && sl < best) || (tV < 0 && sl > best)) { best = sl; kk = k; } }
+      for (let k = tI + 1; k <= tTanLim; k++) {
+        const sl = slope(s, k);
+        // fine della branca discendente: se il segnale riprende a salire (P successiva sovrapposta alla T
+        // nelle tachicardie) la ricerca della tangente si ferma, per non usare la pendenza della P
+        if (best !== 0 && ((tV > 0 && sl > 0.01) || (tV < 0 && sl < -0.01))) break;
+        if ((tV > 0 && sl < best) || (tV < 0 && sl > best)) { best = sl; kk = k; }
+      }
       if (best !== 0) { tEnd = kk + (base - s[kk]) / best; if (tEnd < tI || tEnd > tEndLim + 40) tEnd = null; }
     }
-    return { on, off, c, rI, base, R, Q, S, st, st60, T: tI !== null ? tV : null, tEnd, qrs: (off - on) * DT, qt: tEnd !== null ? (tEnd - on) * DT : null, complete: tI !== null && tI < tPeakLim };
+    return { on, off, c, rI, base, R, Q, S, st, st60, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
   }
 
   function analyzeLead(seg, ptPerMm, speed, gain, opts) {
@@ -330,7 +337,9 @@
     }
     const peaks = detectBeats(sig);
     const beats = [];
-    peaks.forEach((c, i) => { const b = measureBeat(sig, c, peaks[i - 1], peaks[i + 1], raw); if (b) beats.push(b); });
+    // la media mobile (foto) allarga il QRS di ~(w−1)/2 campioni per lato: correzione della sola durata (ST e ampiezze invariati)
+    const cut = opts.smooth > 1 ? Math.min(2, (opts.smooth | 0) >> 1) : 0;
+    peaks.forEach((c, i) => { const b = measureBeat(sig, c, peaks[i - 1], peaks[i + 1], raw, cut); if (b) beats.push(b); });
     const good = beats.filter(b => b.complete);
     const use = good.length ? good : beats;
     const pick = k => { const v = use.map(b => b[k]).filter(v => v !== null && v !== undefined && isFinite(v)); return v.length ? median(v) : null; };
@@ -372,7 +381,7 @@
   /* =====================================================================
      5. ASSEGNAZIONE DELLE DERIVAZIONI
      ===================================================================== */
-  function assignLeads(cls, texts, ptPerMm) {
+  function assignLeads(cls, texts, ptPerMm, profilo) {
     const labels = [];
     texts.forEach(t => { const n = normLabel(t.str); if (n) labels.push({ name: n, x: t.x, y: t.y }); });
     const traces = cls.traces.map(t => ({ ...t, yMed: median(t.pts.map(p => p[1])) }));
@@ -401,7 +410,14 @@
       segs.length = 0;
       const rows = traces.slice().sort((a, b) => a.yMed - b.yMed);
       const wide = rows.filter(r => r.b.w > 180 * ptPerMm);
-      if (rows.length >= 12 && wide.length < 3) {
+      if ((profilo === 'eli280' || profilo === 'std6x2') && wide.length >= 6) {
+        // 6×2 (ELI 280) senza etichette: ogni riga è una traccia continua di 10 s → metà sinistra periferica, metà destra precordiale
+        wide.slice(0, 6).forEach((r, i) => {
+          const xm = r.b.x0 + r.b.w / 2;
+          segs.push({ name: ORDER12[i], pts: r.pts.filter(p => p[0] <= xm - 1), rhythm: false, x0: r.b.x0, x1: xm - 1, y: r.yMed });
+          segs.push({ name: ORDER12[6 + i], pts: r.pts.filter(p => p[0] >= xm + 1), rhythm: false, x0: xm + 1, x1: r.b.x1, y: r.yMed });
+        });
+      } else if (rows.length >= 12 && wide.length < 3) {
         rows.slice(0, 12).forEach((r, i) => segs.push({ name: ORDER12[i], pts: r.pts, rhythm: false, x0: r.b.x0, x1: r.b.x1, y: r.yMed }));
       } else if (wide.length >= 3) {
         wide.slice(0, 3).forEach((r, ri) => {
@@ -478,7 +494,8 @@
       return { ok: false, ptPerMm, calMethod, speed, gain, machine: M, textLines: lines, warnings, leads: {}, overlay: [] };
     }
 
-    const A = assignLeads(cls, ex.texts, ptPerMm);
+    const A = assignLeads(cls, ex.texts, ptPerMm, opts.profilo);
+    if (A.mode === 'presunto' && (!opts.profilo || opts.profilo === 'auto')) warnings.push('Formato del PDF non riconoscibile senza etichette: seleziona in Tecnica il profilo dell\'apparecchio (ELI 280 = 6×2) e rileggi.');
     if (A.mode === 'presunto') warnings.push('Etichette delle derivazioni non leggibili: assunta disposizione standard (' + (A.segs.length >= 12 ? 'verificare l\'ordine' : 'incompleta') + ').');
     const leads = {}, overlay = [];
     let rhythmSeg = null;
@@ -517,6 +534,7 @@
 
     const nLeads = Object.keys(leads).length;
     if (nLeads < 12) warnings.push('Derivazioni lette: ' + nLeads + '/12.');
+    if (rhythm && rhythm.hr > 120 && glob.qt) warnings.push('FC > 120/min: la P successiva può sovrapporsi alla fine della T e far sovrastimare il QT (fino a ~30 ms): verifica il QT manualmente.');
     Object.keys(leads).forEach(k => { if (leads[k].n === 0) warnings.push('Nessun battito misurabile in ' + k + '.'); });
 
     return { ok: true, ptPerMm, calMethod, speed, gain, layout: A.mode, machine: M, textLines: lines, leads, rhythm, glob, overlay, warnings };

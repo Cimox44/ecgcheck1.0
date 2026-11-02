@@ -351,7 +351,12 @@
     const rp = new Float32Array(H);
     for (let y = 0; y < H; y++) { let c = 0; for (let x = 0; x < W; x++) c += dm[y * W + x]; rp[y] = c; }
     const sm = boxBlur1D(rp, H, Math.max(1, Math.round(pxmm * 0.6)));
-    const mx = Math.max.apply(null, sm);
+    // soglia riferita al 3° massimo locale (non al massimo assoluto): i bordi del foglio su fondo scuro
+    // producono 1–2 "righe" molto dense che altrimenti farebbero scartare le righe vere (foto a ~6 px/mm)
+    const loc = [];
+    for (let y = 1; y < H - 1; y++) if (sm[y] >= sm[y - 1] && sm[y] > sm[y + 1]) loc.push(sm[y]);
+    loc.sort((a, b) => b - a);
+    const mx = loc.length ? loc[Math.min(loc.length - 1, 2)] : 0;
     const pk = [];
     for (let y = 1; y < H - 1; y++) if (sm[y] >= sm[y - 1] && sm[y] > sm[y + 1] && sm[y] > mx * 0.22) pk.push({ y, v: sm[y] });
     // separazione minima 9 mm
@@ -431,7 +436,10 @@
       const ref = prev || [base, base];
       runs.forEach(r => {
         const d0 = r[1] < ref[0] ? ref[0] - r[1] : r[0] > ref[1] ? r[0] - ref[1] : 0;
-        const d = d0 + 0.08 * Math.abs((r[0] + r[1]) / 2 - base);
+        // a parità di contatto con la colonna precedente vince la corsa con la sovrapposizione maggiore:
+        // un puntino residuo della griglia vicino alla base non deve "rubare" la traccia sui tratti ripidi (apice di R/S)
+        const ov = d0 === 0 ? Math.min(r[1], ref[1]) - Math.max(r[0], ref[0]) + 1 : 0;
+        const d = d0 + 0.08 * Math.abs((r[0] + r[1]) / 2 - base) - 0.5 * ov;
         if (d < bd) { bd = d; best = r; }
       });
       const lim = prev ? maxJump + gap * pxmm * 0.6 : pxmm * 2.5;
@@ -515,6 +523,9 @@
       const step = median(d.filter(v => v > pxmm * 9)) || median(d);
       cand = rows.filter(r => {
         if (r.pulseL) return true;
+        // riga piatta senza impulso (bordo del foglio su fondo scuro, linea di stampa): escursione < 1 mm
+        const ys = r.pts.map(p => p[1]);
+        if (ys.length && pctl(ys, 0.98) - pctl(ys, 0.02) < pxmm * 1.0) return false;
         // riga senza impulso: accettata solo se a un passo (±20%) dalla riga con impulso più vicina
         const w = withP.reduce((b, q) => Math.abs(q.y - r.y) < Math.abs(b.y - r.y) ? q : b);
         const d = Math.abs(r.y - w.y);
@@ -766,6 +777,7 @@
     const qtT = Object.keys(leads).filter(k => leads[k].qt && leads[k].T !== null && Math.abs(leads[k].T) >= 1.5).map(k => leads[k].qt);
     const qtAll = qtT.length >= 3 ? qtT : Object.values(leads).map(l => l.qt).filter(v => v);
     const glob = { qrs: qrsAll.length ? S.pct(qrsAll, 0.75) : null, qt: qtAll.length ? median(qtAll) : null, pr: rhythm ? rhythm.pr : null, p: rhythm ? rhythm.pDur : null };
+    if (rhythm && rhythm.hr > 120 && glob.qt) warnings.push('FC > 120/min: la P successiva può sovrapporsi alla fine della T e far sovrastimare il QT (fino a ~30 ms): verifica il QT manualmente.');
     // asse: minimi quadrati sulle 6 periferiche (sistema esassiale)
     const ANG = { I: 0, II: 60, III: 120, aVR: -150, aVL: -30, aVF: 90 };
     let sxx = 0, sxy = 0, syy = 0, bx = 0, by = 0, nl = 0;
@@ -785,7 +797,9 @@
     add('Righe del tracciato', rows.length, rows.length >= prof.righe ? 10 : 0, rows.length + '/' + prof.righe);
     add('Taratura', pulseMm, pulseMm == null ? 4 : Math.abs(pulseMm - gain) / gain < 0.06 ? 10 : Math.abs(pulseMm - gain) / gain < 0.12 ? 6 : 0, pulseMm == null ? 'impulso non trovato' : 'impulso ' + pulseMm.toFixed(1) + ' mm');
     add('Prospettiva', persp, persp == null ? 5 : persp < 3 ? 10 : persp < 6 ? 6 : 0, persp == null ? 'non valutabile' : persp.toFixed(1) + '% di differenza sx/dx' + (persp >= 6 ? ' (foto non frontale)' : ''));
-    const score = Math.round(Q.reduce((a, q) => a + q.punti, 0));
+    let score = Math.round(Q.reduce((a, q) => a + q.punti, 0));
+    // derivazioni mancanti: la lettura non può essere "buona" anche se la foto è nitida
+    if (rows.length < prof.righe) score = Math.min(score, 74);
     const level = score >= 75 ? 'buona' : score >= 50 ? 'accettabile' : 'insufficiente';
     if (level === 'insufficiente') warnings.unshift('Qualità insufficiente: rifai la foto (foglio piatto, telefono parallelo, buona luce, niente movimento).');
 
