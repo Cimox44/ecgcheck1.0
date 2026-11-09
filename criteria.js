@@ -8,10 +8,10 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.2.3',
-    criteriaVersion: '2026.11.2',
-    lastReview: '2026-11-02',
-    nextReview: '2026-11-09',
+    version: '1.3.0',
+    criteriaVersion: '2026.11.3',
+    lastReview: '2026-11-09',
+    nextReview: '2026-11-16',
     riferimenti: [
       'Mills NL, Newby LK, Zaman S et al. Fifth Universal Definition of Myocardial Infarction (2026). ESC/ACC/AHA/WHF. Eur Heart J 2026;47:5911-5958 (online 28/08/2026), doi:10.1093/eurheartj/ehag101',
       'Thygesen K et al. Fourth Universal Definition of Myocardial Infarction (2018). Eur Heart J 2019;40:237-269 (soglie ECG di STE utilizzate dal motore)',
@@ -46,6 +46,8 @@
       'Bayés de Luna A et al. Interatrial blocks: consensus report. J Electrocardiol 2012;45:445-451',
       'Corrado D et al. Padua criteria for arrhythmogenic cardiomyopathy. Int J Cardiol 2020;319:106-114',
       'Sagie A et al. Framingham QT correction formula. Am J Cardiol 1992;70:797-801',
+      'Køber L, Adamo M et al. 2026 ESC Guidelines for the management of heart failure. Eur Heart J 2026, doi:10.1093/eurheartj/ehag100',
+      'Nademanee K, Wilde AAM et al. Contemporary perspectives on J-wave syndromes: an expert consensus statement (APHRS/JHRS). J Arrhythm 2026;42:e70284, doi:10.1002/joa3.70284',
       'European Resuscitation Council Guidelines 2025 (Executive Summary; Special Circumstances – iperkaliemia). Resuscitation 2025'
     ]
   };
@@ -148,8 +150,23 @@
     const ag = n((d.asse || {}).gradi);
     if (ag !== null) { m.asse = ag; m.asseFonte = 'inserito'; }
     else {
+      // 1.3.0: asse esassiale ai minimi quadrati sulle periferiche disponibili (QRS netto R − Q − S;
+      // guadagno √3/2 delle aumentate), con eventuali QRS netti sovrascritti nel calcolatore dell'asse
+      const ANGd = { I: 0, II: 60, III: 120, aVR: -150, aVL: -30, aVF: 90 }, ov = d.asseCalc || {};
+      let sxx = 0, sxy = 0, syy = 0, bx = 0, by = 0, nl = 0;
+      Object.keys(ANGd).forEach(l => {
+        let v = n(ov[l]);
+        if (v === null) { const r = amp(d, l, 'r'), s = amp(d, l, 's'), q = amp(d, l, 'q'); if (r === null && s === null) return; v = (r || 0) - Math.abs(q || 0) - Math.abs(s || 0); }
+        const t = ANGd[l] * Math.PI / 180, k = /^aV/.test(l) ? Math.sqrt(3) / 2 : 1, cx = k * Math.cos(t), cy = k * Math.sin(t);
+        sxx += cx * cx; sxy += cx * cy; syy += cy * cy; bx += v * cx; by += v * cy; nl++;
+      });
+      const det = sxx * syy - sxy * sxy;
+      if (nl >= 3 && Math.abs(det) > 1e-9) {
+        const ax = (bx * syy - by * sxy) / det, ay = (by * sxx - bx * sxy) / det;
+        if (Math.hypot(ax, ay) > 0.05) { m.asse = Math.round(Math.atan2(ay, ax) * 180 / Math.PI); m.asseFonte = 'calcolato (minimi quadrati, ' + nl + ' derivazioni periferiche)'; }
+      }
       const rI = amp(d, 'I', 'r'), sI = amp(d, 'I', 's'), rF = amp(d, 'aVF', 'r'), sF = amp(d, 'aVF', 's');
-      if ([rI, sI, rF, sF].some(x => x !== null)) {
+      if (m.asse === undefined && [rI, sI, rF, sF].some(x => x !== null)) {
         const nI = (rI || 0) - (sI || 0), nF = (rF || 0) - (sF || 0);
         if (nI !== 0 || nF !== 0) {
           m.asse = Math.round(Math.atan2(2 * nF, Math.sqrt(3) * nI) * 180 / Math.PI);
@@ -964,7 +981,7 @@
       }
 
       // Formula 4 variabili / Aslanger semplificata
-      const ste60 = n(ex.ste60V3);
+      const ste60 = n(ex.ste60V3) !== null ? n(ex.ste60V3) : n(L(d, 'V3').st60); // 1.3.0: anche da ST60 di V3 nella tabella
       const rv4 = amp(d, 'V4', 'r');
       const qrsv2 = qrsAmp(d, 'V2');
       const anteriorSTE = ['V2', 'V3', 'V4'].some(l => stv[l] !== null && stv[l] >= 1);
@@ -1101,15 +1118,17 @@
       F.add(CAT.RIPOL, 'rp', 'Pattern di ripolarizzazione precoce' + (alto.length ? ' con caratteristiche ad alto rischio' : ''), alto.length ? LIV.MOD : LIV.NORM,
         ['Elevazione del punto J ≥ 1 mm con notch o slurring terminale del QRS in ≥ 2 derivazioni inferiori e/o laterali contigue (esclude V1–V3).',
           alto.length ? 'Caratteristiche associate a maggior rischio aritmico: ' + alto.join(', ') + '.' : 'ST ascendente: variante comune, generalmente benigna.',
-          'Una "ripolarizzazione precoce" in V2–V4 va discriminata dall\'occlusione IVA con la formula a 4 variabili.'],
-        'Macfarlane PW et al. JACC 2015; ESC 2022 VA');
+          'Una "ripolarizzazione precoce" in V2–V4 va discriminata dall\'occlusione IVA con la formula a 4 variabili.',
+          'Sindrome (ERS) solo con aritmie/arresto: Shanghai score ERS modificato 2026 (J ≥ 0,2 mV in > 2 inferolaterali con ST orizzontale/discendente = 2 punti; ≥ 5 punti probabile/definita, 3–4,5 possibile).'],
+        'Macfarlane PW et al. JACC 2015; ESC 2022 VA; consenso J-wave 2026');
     }
 
     // Brugada
     if (p.brugada1) F.add(CAT.RIPOL, 'brugada1', 'Pattern di Brugada tipo 1 (coved)', LIV.CRIT,
       ['STE a tenda ≥ 2 mm in ≥ 1 derivazione precordiale destra (V1–V2, anche in II–III spazio intercostale) seguito da T negativa.',
-        'Spontaneo: diagnostico di sindrome di Brugada (ESC 2022). Escludere fenocopie (febbre, iperK+, farmaci bloccanti Na+).'],
-      'ESC 2022 VA', 'Consulenza aritmologica; trattare la febbre; evitare farmaci elencati su brugadadrugs.org.');
+        'Spontaneo: diagnostico di sindrome di Brugada (ESC 2022). Escludere fenocopie (febbre, iperK+, farmaci bloccanti Na+).',
+        'Shanghai score modificato (consenso J-wave 2026): tipo 1 spontaneo 3,5 punti; indotto da febbre 3; indotto da bloccante Na+ 2; + anamnesi, familiarità, SCN5A. > 3,5 = probabile/definita, 2–3 = possibile, < 2 = non diagnostica.'],
+      'ESC 2022 VA; Nademanee, Wilde et al. J Arrhythm 2026;42:e70284', 'Consulenza aritmologica; trattare la febbre; evitare farmaci elencati su brugadadrugs.org.');
     else if (p.brugada2) F.add(CAT.RIPOL, 'brugada2', 'Pattern di Brugada tipo 2 (saddle-back)', LIV.MOD,
       ['STE a sella ≥ 0,5 mm in V1–V2; non diagnostico da solo.'], 'ESC 2022 VA', 'Ripetere ECG con V1–V2 nel II–III spazio; consulenza aritmologica se sincope/familiarità.');
 
@@ -1199,10 +1218,12 @@
     const fe = n(d.fevs);
     if (fe !== null) {
       let t, lv;
-      if (fe <= 40) { t = 'FEVS ridotta (≤ 40%) — HFrEF'; lv = LIV.ALTO; }
-      else if (fe < 50) { t = 'FEVS lievemente ridotta (41–49%) — HFmrEF'; lv = LIV.MOD; }
-      else { t = 'FEVS conservata (≥ 50%)'; lv = LIV.NORM; }
-      F.add(CAT.FVS, 'fevs', t, lv, ['FEVS ' + fe + '% da ecocardiogramma (dato inserito, NON stimato dall\'ECG).', 'La stima AI della FE dall\'ECG (es. LVsense) non è riproducibile con regole.'], 'ESC 2021/2023 Scompenso');
+      if (fe < 50) { t = 'FEVS ridotta (< 50%) — HFrEF (ESC 2026)'; lv = fe <= 40 ? LIV.ALTO : LIV.MOD; }
+      else { t = 'FEVS conservata (≥ 50%) — HFpEF se scompenso (ESC 2026)'; lv = LIV.NORM; }
+      F.add(CAT.FVS, 'fevs', t, lv, ['FEVS ' + fe + '% da ecocardiogramma (dato inserito, NON stimato dall\'ECG).',
+        'Linee guida ESC 2026: abolita la categoria HFmrEF (41–49%); due fenotipi con un solo cut-off al 50% (HFrEF < 50%, HFpEF ≥ 50%); stadi A–D; "scompenso acuto" → "scompenso decompensato".',
+        fe <= 40 ? 'FEVS ≤ 40%: valutare indicazione a CRT/ICD se QRS largo (soprattutto BBSx ≥ 150 ms) secondo le linee guida su pacing e aritmie.' : '',
+        'La stima AI della FE dall\'ECG non è riproducibile con regole.'].filter(Boolean), 'ESC 2026 Scompenso (Køber, Adamo et al., doi:10.1093/eurheartj/ehag100)');
     }
   }
 
@@ -1300,7 +1321,7 @@
       ['Pericardite acuta (ESC 2025) e DD con OMI', 'alto'], ['Ripolarizzazione precoce (consenso 2015)', 'normale'], ['Brugada tipo 1 / tipo 2', 'critico'],
       ['Iperkaliemia', 'critico'], ['Ipokaliemia (onde U)', 'moderato'], ['Effetto digitalico', 'info'], ['Ipotermia (Osborn)', 'alto'],
       ['Onda epsilon (ACM)', 'alto'], ['Sovraccarico VD / embolia polmonare', 'alto'], ['Alternanza elettrica', 'alto'], ['Inversione onde T', 'moderato'],
-      ['FEVS da eco (HFrEF / HFmrEF / HFpEF)', 'info'], ['Contesto post-cardiochirurgico', 'info']]]
+      ['FEVS da eco (HFrEF < 50% / HFpEF ≥ 50%, ESC 2026)', 'info'], ['Contesto post-cardiochirurgico', 'info']]]
   ];
 
   const API = { META, LEADS, CAT, LIV, analizza, misure, CATALOGO, sogliaSTE };

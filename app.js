@@ -4,6 +4,7 @@
 (function () {
   'use strict';
   const C = window.ECGCriteria;
+  const TL = window.ECGTools;
   const $ = s => document.querySelector(s);
   const $$ = s => Array.from(document.querySelectorAll(s));
   const LS_CASE = 'ecgcheck.case.v1';
@@ -14,7 +15,8 @@
       id: null, creato: null,
       paziente: {}, contesto: {}, tecnica: { velocita: '25', guadagno: '10', profilo: 'auto' },
       ritmo: {}, intervalli: {}, asse: {}, atri: {}, morfologia: {}, leads: {}, extra: {}, pattern: {}, tcl: {},
-      fevs: '', note: '', operatore: '', cal: null
+      fevs: '', note: '', operatore: '', cal: null,
+      manual: {}, asseCalc: {}, qtcCalc: {}
     };
   }
 
@@ -25,10 +27,12 @@
     v: { s: 1, tx: 0, ty: 0 },
     enh: false,
     mode: 'pan',
-    calPts: [], misPts: [], rMarks: [], pMarks: [],
+    calPts: [], misPts: [], rMarks: [], pMarks: [], gPts: [], gLead: 'II', gWave: 'r',
     overlay: [], auto: null, pdfBuf: null,
     result: null
   };
+
+  if (/[?&]test\b/.test(location.search)) window.__ecgState = state; // solo per i test automatici
 
   /* ---------------- util ---------------- */
   function get(o, path) { return path.split('.').reduce((a, k) => (a == null ? undefined : a[k]), o); }
@@ -262,16 +266,72 @@
     }).join('');
     cards.forEach((c, i) => renderFields(document.getElementById(el.id + '_' + i), c.f));
   }
-  function renderLeadTable() {
-    const L = C.LEADS;
-    let h = '<thead><tr><th></th><th>R</th><th>S</th><th>ST (J)</th><th></th><th>T</th><th></th></tr></thead><tbody>';
-    L.forEach((l, i) => {
-      const lv = (state.data.leads || {})[l] || {};
-      const inp = (k) => { const v = lv[k] == null ? '' : lv[k]; const n = num(v); const cls = (k === 'st' && n !== null) ? (n > 0 ? 'pos' : n < 0 ? 'neg' : '') : ''; return '<td><input inputmode="decimal" data-num="1" data-p="leads.' + l + '.' + k + '" class="' + cls + '" value="' + esc(v) + '"></td>'; };
-      h += '<tr' + (i === 6 ? ' class="sep"' : '') + '><td class="ln">' + l + '</td>' + inp('r') + inp('s') + inp('st') + '<td><button class="pm" data-pm="leads.' + l + '.st">±</button></td>' + inp('t') + '<td><button class="pm" data-pm="leads.' + l + '.t">±</button></td></tr>';
-    });
-    $('#leadTable').innerHTML = h + '</tbody>';
+  // 1.3.0: tabella delle onde (P, Q, R, S, J, J+60, T) in mm / mV / mm carta, e durate (ms)
+  const WCOLS = [['p', 'P'], ['q', 'Q'], ['r', 'R'], ['s', 'S'], ['st', 'J'], ['st60', 'J+60'], ['t', 'T']];
+  const DCOLS = [['pd', 'P', 'p'], ['qd', 'Q', 'q'], ['rd', 'R', 'r'], ['sd', 'S', 's'], ['td', 'T', 't']];
+  let leadMode = 'mm', lastLeadInput = null;
+  function gainNow() { return num(state.data.tecnica.guadagno) || 10; }
+  function leadCellVal(l, k) {
+    const raw = get(state.data, 'leads.' + l + '.' + k);
+    if (raw == null || raw === '') return '';
+    if (leadMode === 'dur' || leadMode === 'mm') return String(raw).replace('.', ',');
+    const v = TL.fromStd(raw, leadMode, gainNow()); if (v == null) return '';
+    const d = TL.UNITS[leadMode].dec, kk = Math.pow(10, d);
+    return String(Math.round(v * kk) / kk).replace('.', ',');
   }
+  function renderLeadTable() {
+    const L = C.LEADS, dur = leadMode === 'dur', cols = dur ? DCOLS : WCOLS;
+    const unit = dur ? 'ms' : leadMode === 'mV' ? 'mV' : leadMode === 'carta' ? 'mm a ' + gainNow() + ' mm/mV' : 'mm (10 mm/mV)';
+    let h = '<thead><tr><th></th>' + cols.map(c => '<th>' + c[1] + '</th>').join('') + '</tr><tr><th colspan="' + (cols.length + 1) + '" class="hint" style="font-weight:600">' + esc(unit) + '</th></tr></thead><tbody>';
+    const man = state.data.manual || {};
+    L.forEach((l, i) => {
+      h += '<tr' + (i === 6 ? ' class="sep"' : '') + '><td class="ln">' + l + '</td>' + cols.map(c => {
+        const k = c[0], v = leadCellVal(l, k), n0 = num(get(state.data, 'leads.' + l + '.' + k));
+        const cls = [(k === 'st' || k === 'st60') && n0 !== null ? (n0 > 0 ? 'pos' : n0 < 0 ? 'neg' : '') : '', man['leads.' + l + '.' + k] ? 'man' : ''].filter(Boolean).join(' ');
+        return '<td><input inputmode="' + (dur ? 'numeric' : 'decimal') + '" data-lw="' + l + '.' + k + '" class="' + cls + '" value="' + esc(v) + '" aria-label="' + c[1] + ' ' + l + '"></td>';
+      }).join('') + '</tr>';
+    });
+    const t = $('#leadTable'); t.className = 'lead-table waves'; t.innerHTML = h + '</tbody>';
+    validateLeads();
+  }
+  function validateLeads() {
+    const out = [];
+    $$('#leadTable input[data-lw]').forEach(el => {
+      const [l, k] = el.dataset.lw.split('.');
+      const dur = /^[pqrst]d$/.test(k);
+      const base = dur ? k.slice(0, -1) : k;
+      const r = TL.validate(base, get(state.data, 'leads.' + l + '.' + k), l, dur);
+      el.classList.toggle('err', !!(r && r.lv === 'err')); el.classList.toggle('warn', !!(r && r.lv === 'warn'));
+      if (r) out.push(r);
+    });
+    // coerenza tra derivazioni (Einthoven: II ≈ I + III sul QRS netto)
+    const nq = l => TL.netQRS(state.data, l);
+    const a = nq('I'), b = nq('II'), c = nq('III');
+    if (a !== null && b !== null && c !== null && Math.abs(b - (a + c)) > 3) out.push({ lv: 'warn', msg: 'Legge di Einthoven: QRS netto II (' + fmt(b, 1) + ') ≠ I + III (' + fmt(a + c, 1) + '): controlla le ampiezze o il posizionamento degli elettrodi.' });
+    const el = $('#leadValid'); if (el) el.innerHTML = out.slice(0, 12).map(r => '<div class="' + r.lv + '">' + (r.lv === 'err' ? '⛔ ' : '⚠️ ') + esc(r.msg) + '</div>').join('');
+  }
+  function onLeadInput(e) {
+    const el = e.target; if (!el.dataset || !el.dataset.lw) return;
+    const [l, k] = el.dataset.lw.split('.');
+    const dur = leadMode === 'dur';
+    let txt = el.value.replace(',', '.').replace(/[^0-9.\-]/g, '');
+    if (e.type === 'change' && el.value !== txt.replace('.', ',')) el.value = txt.replace('.', ',');
+    const p = 'leads.' + l + '.' + k;
+    if (txt === '' || txt === '-' || txt === '.') set(state.data, p, txt === '' ? '' : get(state.data, p));
+    else {
+      const v = Number(txt); if (!Number.isFinite(v)) return;
+      const std = dur ? Math.round(v) : Math.round(TL.toStd(v, leadMode, gainNow()) * 100) / 100;
+      set(state.data, p, String(std));
+    }
+    markManual(p);
+    el.classList.add('man');
+    const n0 = num(get(state.data, p));
+    if (k === 'st' || k === 'st60') { el.classList.toggle('pos', n0 > 0); el.classList.toggle('neg', n0 < 0); }
+    if (l === 'V3' && k === 'st60') { /* la formula IVA usa anche lo ST60 di V3 della tabella */ }
+    validateLeads();
+    schedule();
+  }
+  function markManual(p) { state.data.manual = state.data.manual || {}; state.data.manual[p] = true; }
   function renderAllForms() {
     renderFields($('#formTecnica'), FORM_TECNICA);
     renderFields($('#formPaziente'), FORM_PAZIENTE);
@@ -288,6 +348,11 @@
   // binding generico
   document.addEventListener('input', onField);
   document.addEventListener('change', onField);
+  document.addEventListener('input', onLeadInput);
+  document.addEventListener('change', onLeadInput);
+  document.addEventListener('focusin', e => { if (e.target.dataset && e.target.dataset.lw) lastLeadInput = e.target; });
+  // campi che, se modificati a mano, prevalgono sulla lettura automatica
+  const MANUAL_RE = /^(leads\.|intervalli\.|extra\.|asse\.gradi|ritmo\.(fc|rr|pp|fcAtriale|rp))/;
   function onField(e) {
     const el = e.target; const p = el.dataset && el.dataset.p; if (!p) return;
     let v;
@@ -296,8 +361,12 @@
     else v = el.value;
     if (el.dataset.num && el.value !== v && e.type === 'change') el.value = v;
     set(state.data, p, v);
-    if (p.startsWith('leads.') && p.endsWith('.st')) { const n = num(v); el.classList.toggle('pos', n > 0); el.classList.toggle('neg', n < 0); }
-    if (p.startsWith('tecnica.')) updateCalStatus();
+    if (e.isTrusted && MANUAL_RE.test(p)) markManual(p);
+    // stesso campo presente in più schede (es. QT nel calcolatore QTc): sincronizza le copie
+    $$('[data-p="' + p + '"]').forEach(o => { if (o !== el && o.type !== 'checkbox' && document.activeElement !== o) o.value = v; });
+    if (p.startsWith('leads.') && /\.st(60)?$/.test(p)) { const n = num(v); el.classList.toggle('pos', n > 0); el.classList.toggle('neg', n < 0); }
+    if (p.startsWith('tecnica.')) { updateCalStatus(); if (p === 'tecnica.guadagno' && leadMode === 'carta') renderLeadTable(); }
+    if (p.startsWith('leads.') && !el.closest('#leadTable')) refreshLeadCell(p);
     schedule();
   }
   document.addEventListener('click', e => {
@@ -308,12 +377,28 @@
     const inp = document.querySelector('[data-p="' + p + '"]'); if (inp) { inp.value = String(-n); inp.classList.toggle('pos', -n > 0); inp.classList.toggle('neg', -n < 0); }
     schedule();
   });
+  function setFieldRaw(p, v) { setField(p, v); }
   function setField(p, v) {
     set(state.data, p, v);
-    const el = document.querySelector('[data-p="' + p + '"]');
-    if (el) { if (el.type === 'checkbox') el.checked = !!v; else el.value = v; if (p.endsWith('.st')) { const n = num(v); el.classList.toggle('pos', n > 0); el.classList.toggle('neg', n < 0); } }
+    $$('[data-p="' + p + '"]').forEach(el => { if (el.type === 'checkbox') el.checked = !!v; else el.value = v; if (/\.st(60)?$/.test(p)) { const n = num(v); el.classList.toggle('pos', n > 0); el.classList.toggle('neg', n < 0); } });
+    if (p.startsWith('leads.')) refreshLeadCell(p);
     schedule();
   }
+  function refreshLeadCell(p) {
+    const m = p.match(/^leads\.([^.]+)\.([a-z0-9]+)$/); if (!m) return;
+    const el = document.querySelector('#leadTable [data-lw="' + m[1] + '.' + m[2] + '"]'); if (!el) return;
+    el.value = leadCellVal(m[1], m[2]);
+    const n0 = num(get(state.data, p)); if (m[2] === 'st' || m[2] === 'st60') { el.classList.toggle('pos', n0 > 0); el.classList.toggle('neg', n0 < 0); }
+    el.classList.toggle('man', !!(state.data.manual || {})[p]);
+    validateLeads();
+  }
+  // modalità della tabella delle onde e cambio di segno
+  $('#leadMode').addEventListener('click', e => { const b = e.target.closest('[data-lm]'); if (!b) return; leadMode = b.dataset.lm; $$('#leadMode button').forEach(x => x.classList.toggle('active', x === b)); renderLeadTable(); });
+  $('#leadSign').onclick = () => {
+    const el = lastLeadInput; if (!el || !document.body.contains(el)) return toast('Tocca prima una casella della tabella');
+    const v = num(el.value); if (v === null || v === 0) return;
+    el.value = String(-v).replace('.', ','); el.dispatchEvent(new Event('input', { bubbles: true })); el.focus();
+  };
 
   /* =====================================================================
      ANALISI + AUTOSALVATAGGIO
@@ -451,6 +536,8 @@
     // calibrazione
     drawPair(state.calPts, '#3b82f6', lw, fs, false);
     drawPair(state.misPts, '#d946ef', lw, fs, true);
+    drawGuide(lw, fs);
+    drawApex(lw, fs);
     void H;
   }
   function drawPair(pts, col, lw, fs, label) {
@@ -479,11 +566,19 @@
     if (ptrs.size === 2) {
       const [a, b] = Array.from(ptrs.values());
       gest = { type: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), s0: state.v.s, m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, tx0: state.v.tx, ty0: state.v.ty };
-    } else gest = { type: 'tap', p0: p, tx0: state.v.tx, ty0: state.v.ty };
+    } else {
+      const h = (state.mode === 'pan' || state.mode === 'mis') && hitApex(p);
+      gest = h ? { type: 'drag', h, p0: p } : { type: 'tap', p0: p, tx0: state.v.tx, ty0: state.v.ty };
+    }
   });
   cv.addEventListener('pointermove', e => {
     if (!ptrs.has(e.pointerId) || !gest) return;
     const p = pos(e); ptrs.set(e.pointerId, p);
+    if (gest.type === 'drag') {
+      const v = state.v, ix = (p.x - v.tx) / v.s, iy = (p.y - v.ty) / v.s, o = gest.h.o;
+      if (gest.h.part === 'apex') { o.x = ix; o.y = iy; } else { o.bx = ix; o.by = iy; }
+      gest.moved = true; draw(); return;
+    }
     if (gest.type === 'pinch' && ptrs.size === 2) {
       const [a, b] = Array.from(ptrs.values());
       const d = Math.hypot(a.x - b.x, a.y - b.y);
@@ -503,6 +598,7 @@
     const p = pos(e);
     ptrs.delete(e.pointerId);
     if (gest && gest.type === 'tap' && ptrs.size === 0 && e.type === 'pointerup') onTap(p);
+    if (gest && gest.type === 'drag' && gest.moved && pxPerMm()) applyApexDrag(gest.h.o, gest.h.part);
     if (ptrs.size === 0) gest = null;
     else if (gest && gest.type === 'pinch') gest = { type: 'none' };
   }
@@ -529,11 +625,13 @@
     else if (m === 'mis') { if (state.misPts.length >= 2) state.misPts = []; state.misPts.push(ip); }
     else if (m === 'r') state.rMarks.push(ip);
     else if (m === 'p') state.pMarks.push(ip);
+    else if (GUIDE[m]) { if (state.gPts.length >= GUIDE[m].steps.length) state.gPts = []; state.gPts.push(ip); }
     if (navigator.vibrate) try { navigator.vibrate(8); } catch (e) { }
     draw(); renderPanel(); persist();
   }
 
   function setMode(m) {
+    if (m !== state.mode) state.gPts = [];
     state.mode = m;
     $$('#toolbar .tool').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
     renderPanel();
@@ -553,13 +651,177 @@
     fit(); renderPanel(); renderReport();
   };
   $('#undoBtn').onclick = () => {
-    const k = { cal: 'calPts', mis: 'misPts', r: 'rMarks', p: 'pMarks' }[state.mode]; if (k) { state[k].pop(); draw(); renderPanel(); persist(); }
+    const k = GUIDE[state.mode] ? 'gPts' : { cal: 'calPts', mis: 'misPts', r: 'rMarks', p: 'pMarks' }[state.mode]; if (k) { state[k].pop(); draw(); renderPanel(); persist(); }
   };
   $('#clearBtn').onclick = () => {
-    const k = { cal: 'calPts', mis: 'misPts', r: 'rMarks', p: 'pMarks' }[state.mode];
-    if (k) state[k] = []; else { state.misPts = []; state.rMarks = []; state.pMarks = []; }
+    const k = GUIDE[state.mode] ? 'gPts' : { cal: 'calPts', mis: 'misPts', r: 'rMarks', p: 'pMarks' }[state.mode];
+    if (k) state[k] = []; else { state.misPts = []; state.rMarks = []; state.pMarks = []; state.gPts = []; }
     draw(); renderPanel(); persist();
   };
+
+  /* =====================================================================
+     1.3.0 – STRUMENTI DI MISURA GUIDATA (PR, QRS, onda R/P/Q/S/T, ST, QT, PP, RR, RP)
+     ===================================================================== */
+  const GUIDE = {
+    'g-pr': { nome: 'PR', kind: 'time', steps: ['Tocca l\'inizio dell\'onda P', 'Tocca l\'inizio del QRS (prima deflessione, Q o R)'], target: 'intervalli.pr', norm: 'normale 120–200 ms (BAV I > 200; corto < 120)' },
+    'g-qrs': { nome: 'QRS', kind: 'time', steps: ['Tocca l\'inizio del QRS', 'Tocca la fine del QRS (punto J)'], target: 'intervalli.qrs', norm: 'normale < 110 ms; incompleto 110–119; blocco ≥ 120 ms' },
+    'g-qt': { nome: 'QT', kind: 'time', steps: ['Tocca l\'inizio del QRS', 'Tocca la fine dell\'onda T (dove la tangente alla branca discendente incontra la linea di base)'], target: 'intervalli.qt' },
+    'g-pp': { nome: 'PP', kind: 'time', steps: ['Tocca l\'inizio di un\'onda P', 'Tocca l\'inizio dell\'onda P successiva'], target: 'ritmo.pp', rate: 'ritmo.fcAtriale' },
+    'g-rr': { nome: 'RR', kind: 'time', steps: ['Tocca il picco di un\'onda R', 'Tocca il picco dell\'onda R successiva'], target: 'ritmo.rr', rate: 'ritmo.fc' },
+    'g-rp': { nome: 'RP', kind: 'time', steps: ['Tocca l\'inizio del QRS della tachicardia', 'Tocca l\'inizio della P retrograda che segue il QRS'], target: 'ritmo.rp' },
+    'g-r': { nome: 'Onda', kind: 'wave', lead: true, steps: ['Tocca la linea di base (segmento PR o TP)', 'Tocca l\'apice dell\'onda (picco della R / nadir di Q o S)', 'Facoltativo: tocca l\'inizio dell\'onda (sulla linea di base)', 'Facoltativo: tocca la fine dell\'onda (sulla linea di base)'] },
+    'g-st': { nome: 'ST', kind: 'st', lead: true, steps: ['Tocca la linea di base (segmento PR, o TP) prima del QRS', 'Tocca il punto J (fine del QRS)', 'Tocca la traccia sulla linea viola (J + 60 ms)'] }
+  };
+  const WAVE_OPTS = [['r', 'R'], ['s', 'S'], ['q', 'Q'], ['p', 'P'], ['t', 'T']];
+  function sexAgeTxt() { const p = state.data.paziente || {}; return (p.sesso === 'F' ? 'donna' : p.sesso === 'M' ? 'uomo' : 'sesso n.d.') + (num(p.eta) != null ? ' ' + num(p.eta) + ' a' : ''); }
+  function rrNow() { const r = num(state.data.ritmo.rr); if (r) return r; const f = num(state.data.ritmo.fc); return f ? 60000 / f : null; }
+  function j60x(j) { return j.x + 60 / msPerMm() * pxPerMm(); }
+  function guideResult(m) {
+    const G = GUIDE[m], P = state.gPts, out = { ok: false };
+    if (G.kind === 'time') {
+      if (P.length < 2) return out;
+      out.ms = Math.round(toMs(P[1].x - P[0].x)); out.ok = true;
+      return out;
+    }
+    if (G.kind === 'wave') {
+      if (P.length < 2) return out;
+      out.mm = toMm(P[1].y - P[0].y); out.ok = true;
+      if (P.length >= 4) out.dur = Math.round(toMs(P[3].x - P[2].x));
+      return out;
+    }
+    if (G.kind === 'st') {
+      if (P.length < 2) return out;
+      out.st = toMm(P[1].y - P[0].y); out.ok = true;
+      if (P.length >= 3) out.st60 = toMm(P[2].y - P[0].y);
+      return out;
+    }
+    return out;
+  }
+  function renderGuide(P, m) {
+    const G = GUIDE[m], pts = state.gPts;
+    if (!pxPerMm()) { P.innerHTML = '<div class="hint">Prima calibra (strumento <b>Calibra</b>) oppure carica un PDF/foto letto automaticamente.</div>'; return; }
+    let h = '<div class="hint"><b>' + (G.kind === 'wave' ? 'Onda: ampiezza e durata' : G.kind === 'st' ? 'Tratto ST (J e J+60)' : 'Intervallo ' + G.nome) + '</b> – ingrandisci con due dita per toccare con precisione.</div>';
+    if (G.lead) {
+      h += '<div class="gl-row"><select id="gLead" aria-label="Derivazione">' + C.LEADS.map(l => '<option' + (l === state.gLead ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>';
+      if (G.kind === 'wave') h += '<select id="gWave" aria-label="Onda">' + WAVE_OPTS.map(o => '<option value="' + o[0] + '"' + (o[0] === state.gWave ? ' selected' : '') + '>Onda ' + o[1] + '</option>').join('') + '</select>';
+      h += '</div>';
+    }
+    h += '<ol class="steps">' + G.steps.map((t, i) => '<li class="' + (i < pts.length ? 'done' : i === pts.length ? 'now' : '') + '">' + esc(t) + '</li>').join('') + '</ol>';
+    const r = guideResult(m);
+    let apply = '';
+    if (r.ok) {
+      if (G.kind === 'time') {
+        let extra = '';
+        if (m === 'g-qt') {
+          const rr = rrNow();
+          if (rr) { const q = TL.qtc({ qt: r.ms, rr, qrs: state.data.intervalli.qrs, sesso: state.data.paziente.sesso }); extra = '<br><small>QTc Framingham ' + fmt(q.framingham) + ' · Fridericia ' + fmt(q.fridericia) + ' · Bazett ' + fmt(q.bazett) + ' ms (RR ' + fmt(rr) + ' ms)</small>'; }
+          else extra = '<br><small>Inserisci RR o FC per il QTc</small>';
+        }
+        if (G.rate) extra = '<br><small>Frequenza ' + fmt(60000 / r.ms) + '/min</small>';
+        if (m === 'g-rp') { const pr = num(state.data.intervalli.pr); extra = '<br><small>' + (r.ms < 70 ? 'RP < 70 ms: favorisce TRNAV tipica' : pr && r.ms > pr ? 'RP > PR (RP lungo): tachicardia atriale, TRNAV atipica, PJRT' : 'RP ≥ 70 ms (RP corto < PR): favorisce TRAV ortodromica') + '</small>'; }
+        if (G.norm) extra += '<br><small>' + esc(G.norm) + '</small>';
+        h += '<div class="res">' + G.nome + ' = ' + r.ms + ' ms' + extra + '</div>';
+        apply = '<button class="btn sm primary" id="gApply">✔ Applica ' + G.nome + ' = ' + r.ms + ' ms</button>';
+      } else if (G.kind === 'wave') {
+        const w = state.gWave, g = gainNow();
+        let v = r.mm; const signed = (w === 'p' || w === 't');
+        const shown = signed ? v : Math.abs(v);
+        h += '<div class="res">' + w.toUpperCase() + ' ' + state.gLead + ' = ' + fmt(shown, 1) + ' mm · ' + fmt(shown / 10, 2) + ' mV<br><small>sulla carta ' + fmt(Math.abs(shown) * g / 10, 1) + ' mm a ' + g + ' mm/mV' + (r.dur != null ? ' · durata ' + r.dur + ' ms' : ' · tocca inizio e fine dell\'onda per la durata') + '</small></div>';
+        const vr = TL.validate(w, shown, state.gLead); if (vr) h += '<div class="hint ' + (vr.lv === 'err' ? 'st-bad' : 'warn') + '">' + esc(vr.msg) + '</div>';
+        apply = '<button class="btn sm primary" id="gApply">✔ Applica ' + w.toUpperCase() + ' ' + state.gLead + (r.dur != null ? ' (ampiezza + durata)' : '') + '</button>';
+      } else {
+        const l = state.gLead, thr = l === 'aVR' ? 1 : C.sogliaSTE(l, state.data.paziente.sesso, num(state.data.paziente.eta));
+        const st = Math.round(r.st * 10) / 10;
+        const ste = st >= thr, std = st <= -0.5;
+        h += '<div class="res">ST ' + l + ' (J) = ' + (st > 0 ? '+' : '') + fmt(st, 1) + ' mm · ' + fmt(st / 10, 2) + ' mV' + (r.st60 != null ? '<br>J+60 = ' + (r.st60 > 0 ? '+' : '') + fmt(r.st60, 1) + ' mm' : '') + '</div>';
+        h += '<div class="hint">Soglia STE ' + l + ': <b>≥ ' + fmt(thr, 1) + ' mm</b> (' + esc(sexAgeTxt()) + ', ' + (l === 'aVR' ? 'aVR' : 'IV/V UDMI') + ') → ' + (ste ? '<span class="st-bad">SOPRA SOGLIA</span>' : std ? '<span class="st-bad">sottoslivellamento ≥ 0,5 mm</span>' : '<span class="st-ok">sotto soglia</span>') + (ste ? ' – conta solo se presente in 2 derivazioni contigue.' : '') + '</div>';
+        apply = '<button class="btn sm primary" id="gApply">✔ Applica ST ' + l + (r.st60 != null ? ' (J e J+60)' : '') + '</button>';
+      }
+    }
+    h += '<div class="actions">' + apply + '<button class="btn sm" id="gReset">↺ Ricomincia</button>' + (G.lead && r.ok ? '<button class="btn sm" id="gNext">Applica e passa alla derivazione successiva</button>' : '') + '</div>';
+    P.innerHTML = h;
+    const gl = $('#gLead'); if (gl) gl.onchange = () => { state.gLead = gl.value; renderPanel(); };
+    const gw = $('#gWave'); if (gw) gw.onchange = () => { state.gWave = gw.value; renderPanel(); };
+    $('#gReset').onclick = () => { state.gPts = []; draw(); renderPanel(); };
+    const doApply = () => {
+      if (G.kind === 'time') {
+        setField(G.target, String(r.ms)); markManual(G.target);
+        if (G.rate) { setField(G.rate, String(Math.round(60000 / r.ms))); markManual(G.rate); }
+        toast(G.nome + ' = ' + r.ms + ' ms applicato');
+      } else if (G.kind === 'wave') {
+        const w = state.gWave, l = state.gLead; let v = Math.round(r.mm * 10) / 10; if (!(w === 'p' || w === 't')) v = Math.abs(v);
+        setField('leads.' + l + '.' + w, String(v)); markManual('leads.' + l + '.' + w);
+        if (r.dur != null) { setField('leads.' + l + '.' + w + 'd', String(r.dur)); markManual('leads.' + l + '.' + w + 'd'); }
+        toast(w.toUpperCase() + ' ' + l + ' = ' + fmt(v, 1) + ' mm' + (r.dur != null ? ', ' + r.dur + ' ms' : ''));
+      } else {
+        const l = state.gLead;
+        setField('leads.' + l + '.st', String(Math.round(r.st * 10) / 10)); markManual('leads.' + l + '.st');
+        if (r.st60 != null) { setField('leads.' + l + '.st60', String(Math.round(r.st60 * 10) / 10)); markManual('leads.' + l + '.st60'); if (l === 'V3') setField('extra.ste60V3', String(Math.round(r.st60 * 10) / 10)); }
+        toast('ST ' + l + ' applicato');
+      }
+      refreshLeadCell('leads.' + state.gLead + '.st');
+      persist();
+    };
+    const ga = $('#gApply'); if (ga) ga.onclick = () => { doApply(); };
+    const gn = $('#gNext'); if (gn) gn.onclick = () => { doApply(); const i = C.LEADS.indexOf(state.gLead); state.gLead = C.LEADS[(i + 1) % 12]; state.gPts = []; draw(); renderPanel(); };
+  }
+  function drawGuide(lw, fs) {
+    const G = GUIDE[state.mode]; const P = state.gPts; if (!G || !P.length) return;
+    const col = '#7c3aed';
+    g.strokeStyle = col; g.fillStyle = col; g.lineWidth = lw;
+    P.forEach((p, i) => { g.beginPath(); g.arc(p.x, p.y, 5 * lw, 0, Math.PI * 2); g.stroke(); g.fillText(String(i + 1), p.x + 6 * lw, p.y - 6 * lw); });
+    const mmPx = pxPerMm() || 6;
+    if (G.kind === 'time' && P.length >= 2) {
+      g.setLineDash([6 * lw, 4 * lw]); g.beginPath(); g.moveTo(P[0].x, P[0].y); g.lineTo(P[1].x, P[0].y); g.lineTo(P[1].x, P[1].y); g.stroke(); g.setLineDash([]);
+      if (pxPerMm()) g.fillText(Math.round(toMs(P[1].x - P[0].x)) + ' ms', (P[0].x + P[1].x) / 2, P[0].y - 10 * lw);
+    }
+    if (G.kind === 'wave' || G.kind === 'st') {
+      // linea di base estesa
+      g.setLineDash([6 * lw, 4 * lw]); g.beginPath(); g.moveTo(P[0].x - mmPx * 8, P[0].y); g.lineTo(P[0].x + mmPx * 14, P[0].y); g.stroke(); g.setLineDash([]);
+      if (P.length >= 2) { g.beginPath(); g.moveTo(P[1].x, P[0].y); g.lineTo(P[1].x, P[1].y); g.stroke(); if (pxPerMm()) g.fillText(fmt(toMm(P[1].y - P[0].y), 1) + ' mm', P[1].x + 8 * lw, (P[0].y + P[1].y) / 2); }
+      if (G.kind === 'st' && P.length >= 2 && pxPerMm()) {
+        const x = j60x(P[1]);
+        g.strokeStyle = '#d946ef'; g.lineWidth = lw * 1.5; g.beginPath(); g.moveTo(x, P[0].y - mmPx * 12); g.lineTo(x, P[0].y + mmPx * 12); g.stroke();
+        g.fillStyle = '#d946ef'; g.fillText('J+60', x + 4 * lw, P[0].y - mmPx * 12);
+      }
+      if (G.kind === 'wave' && P.length >= 4) { g.beginPath(); g.moveTo(P[2].x, P[2].y + 8 * lw); g.lineTo(P[3].x, P[2].y + 8 * lw); g.stroke(); if (pxPerMm()) g.fillText(Math.round(toMs(P[3].x - P[2].x)) + ' ms', (P[2].x + P[3].x) / 2, P[2].y + 22 * lw); }
+    }
+  }
+  // punti usati dalla lettura automatica per R e S: base (quadrato) e apice/nadir (rombo), trascinabili
+  function drawApex(lw, fs) {
+    (state.overlay || []).forEach(o => {
+      if (o.t !== 'apex') return;
+      const col = o.k === 'r' ? '#e5484d' : '#2b6cdf', r = (pxPerMm() && pxPerMm() * state.v.s < 3 ? 3 : 5) * lw;
+      g.strokeStyle = col; g.lineWidth = lw;
+      g.setLineDash([3 * lw, 3 * lw]); g.beginPath(); g.moveTo(o.bx, o.by); g.lineTo(o.x, o.by); g.lineTo(o.x, o.y); g.stroke(); g.setLineDash([]);
+      g.fillStyle = col; g.beginPath(); g.moveTo(o.x, o.y - r); g.lineTo(o.x + r, o.y); g.lineTo(o.x, o.y + r); g.lineTo(o.x - r, o.y); g.closePath(); g.fill();
+      g.fillStyle = '#16a34a'; g.fillRect(o.bx - r * 0.8, o.by - r * 0.8, r * 1.6, r * 1.6);
+      // etichette solo quando l'ingrandimento le rende leggibili (≥ 3 px/mm sullo schermo)
+      if (pxPerMm() && pxPerMm() * state.v.s >= 3) { g.fillStyle = col; g.fillText((o.k === 'r' ? 'R ' : 'S ') + o.lead + (o.lim ? ' ≥' : ' ') + fmt(Math.abs(toMm(o.y - o.by)), 1), o.x + 7 * lw, o.y + (o.k === 'r' ? -4 : 12) * lw); }
+    });
+  }
+  function hitApex(p) {
+    // p in coordinate dello schermo; restituisce la maniglia più vicina entro 18 px
+    const v = state.v; let best = null, bd = 18;
+    (state.overlay || []).forEach(o => {
+      if (o.t !== 'apex') return;
+      [['apex', o.x, o.y], ['base', o.bx, o.by]].forEach(([part, x, y]) => { const d = Math.hypot(x * v.s + v.tx - p.x, y * v.s + v.ty - p.y); if (d < bd) { bd = d; best = { o, part }; } });
+    });
+    return best;
+  }
+  function applyApexDrag(o, part) {
+    const lead = o.lead;
+    const items = (state.overlay || []).filter(q => q.t === 'apex' && q.lead === lead);
+    if (part === 'base') items.forEach(q => { q.by = o.by; });
+    items.forEach(q => {
+      if (part === 'apex' && q !== o) return;
+      const v = Math.round(Math.abs(toMm(q.y - q.by)) * 10) / 10;
+      const p = 'leads.' + lead + '.' + q.k; q.lim = false;
+      setField(p, String(v)); markManual(p);
+    });
+    toast((part === 'base' ? 'Linea di base ' : (o.k === 'r' ? 'R ' : 'S ')) + lead + ' corretta' + (part === 'base' ? '' : ': ' + fmt(Math.abs(toMm(o.y - o.by)), 1) + ' mm'));
+    persist();
+  }
 
   // pannello strumenti
   const TIME_TARGETS = [['intervalli.pr', 'PR'], ['intervalli.qrs', 'QRS'], ['intervalli.qt', 'QT'], ['intervalli.p', 'Durata P'], ['ritmo.rr', 'RR'], ['ritmo.pp', 'PP'], ['ritmo.rp', 'RP'], ['ritmo.pausaMax', 'Pausa massima'], ['atri.ptfDur', 'PTFV1 durata']];
@@ -572,7 +834,8 @@
   }
   function renderPanel() {
     const P = $('#toolPanel'); const m = state.mode;
-    if (!state.img) { P.innerHTML = ''; return; }
+    if (!state.img) { P.innerHTML = GUIDE[m] ? '<div class="hint">Carica una foto o un PDF dell\'ECG per usare lo strumento ' + GUIDE[m].nome + '.</div>' : ''; return; }
+    if (GUIDE[m]) return renderGuide(P, m);
     if (m === 'pan') { P.innerHTML = '<div class="hint">Trascina per spostare, pizzica per ingrandire. Seleziona uno strumento per misurare.</div>'; return; }
     if (m === 'cal') {
       let h = '<div class="hint"><b>Calibrazione:</b> tocca due punti della griglia a distanza nota (es. 5 quadrati grandi = 25 mm in orizzontale, oppure il segnale di taratura da 10 mm). Ingrandisci per precisione.</div>';
@@ -650,7 +913,7 @@
     state.data.cal = { pxPerMm: res.pxPerMm, fonte: 'PDF – ' + res.calMethod, data: new Date().toISOString() };
     state.data.tecnica.velocita = String(res.speed); state.data.tecnica.guadagno = String(res.gain);
     ['tecnica.velocita', 'tecnica.guadagno'].forEach(p => { const el = document.querySelector('[data-p="' + p + '"]'); if (el) el.value = get(state.data, p); });
-    state.overlay = (res.overlay || []).map(o => Object.assign({}, o, { x: o.x != null ? o.x * RS : null, y: o.y * RS, x0: o.x0 != null ? o.x0 * RS : null, x1: o.x1 != null ? o.x1 * RS : null }));
+    state.overlay = (res.overlay || []).map(o => Object.assign({}, o, { x: o.x != null ? o.x * RS : null, y: o.y * RS, x0: o.x0 != null ? o.x0 * RS : null, x1: o.x1 != null ? o.x1 * RS : null, bx: o.bx != null ? o.bx * RS : undefined, by: o.by != null ? o.by * RS : undefined }));
     state.auto = summarizeAuto(res);
     renderAuto();
     toast(res.ok ? 'PDF letto: controlla i valori proposti e premi «Applica»' : 'PDF caricato: ' + (res.warnings[0] || 'lettura automatica non disponibile'), 5000);
@@ -676,7 +939,7 @@
   }
   function summarizeAuto(res) {
     const L = {};
-    Object.keys(res.leads || {}).forEach(k => { const l = res.leads[k]; L[k] = { R: l.R, S: l.S, Q: l.Q, st: l.st, st60: l.st60, T: l.T, qrs: l.qrs, qt: l.qt, n: l.n }; });
+    Object.keys(res.leads || {}).forEach(k => { const l = res.leads[k]; L[k] = { R: l.R, S: l.S, Q: l.Q, st: l.st, st60: l.st60, T: l.T, qrs: l.qrs, qt: l.qt, n: l.n, rLim: !!l.rLim, sLim: !!l.sLim, stLim: !!l.stLim }; });
     const r = res.rhythm;
     return {
       ok: res.ok, source: res.source || 'pdf', quality: res.quality || null, profile: res.profile || null, rotation: res.rotation, pxPerMm: res.pxPerMm,
@@ -712,9 +975,11 @@
         row('QTc', null, M.qtc, ' ms') + row('Asse QRS', G.asse, M.assi && M.assi.qrs, '°') + row(photo ? 'Durata P (indicativa, non applicata)' : 'Durata P', G.p, M.p, ' ms') + '</table>';
       if (photo && G.qrs != null && G.qrs >= 120) h += '<div class="disclaimer">QRS ' + fmt(G.qrs) + ' ms letto dalla foto: nei tracciati con voltaggi alti o tracce sovrapposte la foto tende a sovrastimarlo. Confrontalo con il valore stampato prima di applicarlo.</div>';
       if (R) h += '<p class="hint">Ritmo (' + esc(R.lead) + '): RR medio ' + fmt(R.rrMean) + ' ms, variabilità ' + fmt(R.rrVar) + ' ms → ' + (isIrregular(R) ? '<b>irregolare</b>' : 'regolare') + '; onde P ' + (R.pPresenti ? 'riconosciute prima di ogni QRS (PR ' + fmt(R.pr) + ' ms)' : '<b>non riconosciute</b> con certezza') + '.</p>';
+      const man = state.data.manual || {};
       h += '<h4>Derivazioni (mm)</h4><div class="lead-table-wrap"><table class="lead-table auto"><tr><th></th><th>R</th><th>S</th><th>ST J</th><th>ST60</th><th>T</th><th>batt.</th></tr>' +
-        C.LEADS.map(k => { const l = A.leads[k]; if (!l) return '<tr><td class="ln">' + k + '</td><td colspan="6" class="hint">non letta</td></tr>'; const stc = l.st > 0.05 ? 'pos' : l.st < -0.05 ? 'neg' : ''; return '<tr><td class="ln">' + k + '</td><td>' + fmt(l.R, 1) + '</td><td>' + fmt(l.S, 1) + '</td><td class="' + stc + '">' + fmt(l.st, 1) + '</td><td>' + fmt(l.st60, 1) + '</td><td>' + fmt(l.T, 1) + '</td><td>' + l.n + '</td></tr>'; }).join('') + '</table></div>';
-      h += '<p class="hint">Sul tracciato: <span style="color:#16a34a">▬</span> linea di base, <span style="color:#f76b15">●</span> punto J, <span style="color:#e5484d">|</span> onde R della striscia del ritmo. Verifica che siano nei punti giusti.</p>';
+        C.LEADS.map(k => { const l = A.leads[k]; if (!l) return '<tr><td class="ln">' + k + '</td><td colspan="6" class="hint">non letta</td></tr>'; const stc = l.st > 0.05 ? 'pos' : l.st < -0.05 ? 'neg' : ''; const mk = q => man['leads.' + k + '.' + q] ? ' ✎' : ''; return '<tr><td class="ln">' + k + '</td><td' + (l.rLim ? ' class="lim" title="tracce sovrapposte: valore minimo"' : '') + '>' + (l.rLim ? '≥' : '') + fmt(l.R, 1) + mk('r') + '</td><td' + (l.sLim ? ' class="lim"' : '') + '>' + (l.sLim ? '≥' : '') + fmt(l.S, 1) + mk('s') + '</td><td class="' + stc + '">' + (l.stLim ? '<span class="lim">n.m.</span>' : fmt(l.st, 1)) + mk('st') + '</td><td>' + fmt(l.st60, 1) + '</td><td>' + fmt(l.T, 1) + mk('t') + '</td><td>' + l.n + '</td></tr>'; }).join('') + '</table></div>';
+      if (C.LEADS.some(k => A.leads[k] && (A.leads[k].rLim || A.leads[k].sLim || A.leads[k].stLim))) h += '<div class="disclaimer"><b>≥</b> = traccia sovrapposta a quella della riga vicina (R alte / S profonde, tipico dell\'IVS nel formato 6×2): il valore è misurato fino al punto di contatto ed è di norma un <b>minimo</b> (se le tracce si incrociano oltre la linea di base della riga vicina può essere del tutto inattendibile): <b>va sempre verificato</b>. <b>n.m.</b> = ST non misurabile per lo stesso motivo. Trascina il rombo dell\'apice sul tracciato oppure usa lo strumento «Onda R» / «ST».</div>';
+      h += '<p class="hint">Sul tracciato: <span style="color:#16a34a">▬ ■</span> linea di base, <span style="color:#f76b15">●</span> punto J, <span style="color:#e5484d">◆</span> apice della R e <span style="color:#2b6cdf">◆</span> nadir della S usati per le ampiezze (<b>trascinali</b> con il dito per correggerli: il valore viene aggiornato e registrato come correzione manuale), <span style="color:#e5484d">|</span> onde R della striscia del ritmo.</p>';
       if (photo) h += '<p class="hint">Le misure stampate dall\'elettrocardiografo (FC, PR, QRS, QT/QTc, assi) restano le più affidabili: se le leggi sul foglio, inseriscile nella scheda Ritmo. Con voltaggi molto alti (QRS che invadono la riga vicina, tipico dell\'IVS) R e S non sono misurabili dalla foto: misurale con il calibro.</p>';
       h += '<div class="actions"><button class="btn primary" id="autoApply">✅ Applica tutti i valori</button><button class="btn" id="autoApplyLeads">Applica solo le derivazioni</button></div>';
     }
@@ -735,11 +1000,16 @@
   function applyAuto(all) {
     const A = state.auto; if (!A || !A.ok) return;
     if (A.quality && A.quality.level === 'insufficiente' && !confirm('La qualità della foto è insufficiente: i valori potrebbero essere errati. Applicarli comunque?')) return;
+    // 1.3.0: i valori corretti a mano prevalgono sulla lettura automatica
+    const man = state.data.manual || {}; let kept = 0;
+    const setField = (p, v) => { if (man[p]) { kept++; return; } setFieldRaw(p, v); };
     Object.keys(A.leads).forEach(k => {
       const l = A.leads[k];
       if (l.R != null) setField('leads.' + k + '.r', String(r1(Math.abs(l.R))));
       if (l.S != null) setField('leads.' + k + '.s', String(r1(Math.abs(l.S))));
+      if (l.Q != null && l.Q >= 0.5) setField('leads.' + k + '.q', String(r1(Math.abs(l.Q))));
       if (l.st != null) setField('leads.' + k + '.st', String(r1(l.st)));
+      if (l.st60 != null) setField('leads.' + k + '.st60', String(r1(l.st60)));
       if (l.T != null) setField('leads.' + k + '.t', String(r1(l.T)));
     });
     if (A.leads.V3 && A.leads.V3.st60 != null) setField('extra.ste60V3', String(r1(A.leads.V3.st60)));
@@ -758,15 +1028,16 @@
         if (R.pPresenti && /^II/.test(R.lead || '')) { setField('ritmo.ondeP', 'sinusali'); setField('ritmo.rapportoPQRS', '1:1'); }
         if (R.rr && R.rr.length) { const mx = Math.max.apply(null, R.rr); if (mx >= 1500) setField('ritmo.pausaMax', String(Math.round(mx))); }
       } else if (M.fc != null) setField('ritmo.fc', String(M.fc));
+      // 1.3.0: solo l'asse stampato dall'elettrocardiografo viene imposto; quello calcolato dalla traccia
+      // lo ricalcola il motore dalle ampiezze (minimi quadrati) e resta modificabile nel calcolatore
       if (M.assi && M.assi.qrs != null) setField('asse.gradi', String(M.assi.qrs));
-      else if (G.asse != null) setField('asse.gradi', String(G.asse));
     }
     // istantanea dei valori proposti: al salvataggio si confrontano con quelli confermati (registro di precisione)
     if (A.source === 'foto') state.data.fotoDaVerificare = true;
     state.data.autoApplied = { src: A.source, profilo: state.data.tecnica.profilo || 'auto', qualita: A.quality ? A.quality.score : null, quando: new Date().toISOString(), valori: snapshotValues() };
     const noP = all && A.rhythm && !A.rhythm.pPresenti;
     const ph = A.source === 'foto';
-    toast('Valori applicati.' + (noP ? ' Onde P non riconosciute: specificale nella scheda Ritmo.' : '') + (ph ? ' PR e durata P non applicati dalla foto: inseriscili dalla stampa dell\'elettrocardiografo o misurali con il calibro.' : ' Completa i pattern morfologici e controlla il referto.'), 6500);
+    toast('Valori applicati.' + (kept ? ' ' + kept + ' valori corretti a mano sono stati mantenuti.' : '') + (noP ? ' Onde P non riconosciute: specificale nella scheda Ritmo.' : '') + (ph ? ' PR e durata P non applicati dalla foto: inseriscili dalla stampa dell\'elettrocardiografo o misurali con il calibro.' : ' Completa i pattern morfologici e controlla il referto.'), 6500);
   }
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-pdfpage]'); if (!b || !state.pdfBuf) return;
@@ -777,14 +1048,15 @@
   /* ---------------- registro di precisione ---------------- */
   function snapshotValues() {
     const d = state.data, v = { leads: {} };
-    C.LEADS.forEach(k => { const l = d.leads[k] || {}; v.leads[k] = { r: num(l.r), s: num(l.s), st: num(l.st), t: num(l.t) }; });
+    C.LEADS.forEach(k => { const l = d.leads[k] || {}; v.leads[k] = { r: num(l.r), s: num(l.s), q: num(l.q), st: num(l.st), st60: num(l.st60), t: num(l.t) }; });
     v.pr = num(d.intervalli.pr); v.qrs = num(d.intervalli.qrs); v.qt = num(d.intervalli.qt); v.fc = num(d.ritmo.fc); v.asse = num(d.asse.gradi);
     return v;
   }
   function precisionDiff() {
     const a = state.data.autoApplied; if (!a) return null;
-    const cur = snapshotValues(), out = { src: a.src, profilo: a.profilo, qualita: a.qualita, diff: { st: [], r: [], s: [], t: [] }, glob: {}, corretti: 0, totale: 0 };
-    C.LEADS.forEach(k => ['st', 'r', 's', 't'].forEach(q => {
+    const cur = snapshotValues(), out = { src: a.src, profilo: a.profilo, qualita: a.qualita, diff: { st: [], r: [], s: [], t: [], st60: [] }, bias: { r: [], s: [], st: [] }, glob: {}, corretti: 0, totale: 0, manuali: Object.keys(state.data.manual || {}).length, lim: (state.auto && state.auto.leads) ? Object.keys(state.auto.leads).filter(k => state.auto.leads[k].rLim || state.auto.leads[k].sLim || state.auto.leads[k].stLim) : [] };
+    C.LEADS.forEach(k => ['r', 's', 'st'].forEach(q => { const x = a.valori.leads[k] && a.valori.leads[k][q], y = cur.leads[k][q]; if (x != null && y != null && Math.abs(y - x) >= 0.1) out.bias[q].push(Math.round((x - y) * 10) / 10); }));
+    C.LEADS.forEach(k => ['st', 'r', 's', 't', 'st60'].forEach(q => {
       const x = a.valori.leads[k] && a.valori.leads[k][q], y = cur.leads[k][q];
       if (x == null || y == null) return; out.totale++; const dlt = Math.abs(y - x); out.diff[q].push(Math.round(dlt * 10) / 10); if (dlt >= 0.1) out.corretti++;
     }));
@@ -826,11 +1098,13 @@
     const recs = all.filter(r => r.precisione);
     if (!recs.length) { el.innerHTML = '<p class="hint">Nessun dato ancora: dopo «Applica» e «Salva in archivio» l\'app confronta i valori letti automaticamente con quelli che hai confermato o corretto.</p>'; return; }
     const agg = { st: [], r: [], s: [], t: [] }, g = { qrs: [], qt: [], fc: [], pr: [] }; let corr = 0, tot = 0;
-    recs.forEach(r => { const p = r.precisione; Object.keys(agg).forEach(k => agg[k].push.apply(agg[k], p.diff[k] || [])); Object.keys(g).forEach(k => { if (p.glob && p.glob[k] != null) g[k].push(p.glob[k]); }); corr += p.corretti || 0; tot += p.totale || 0; });
+    const bias = { r: [], s: [], st: [] };
+    recs.forEach(r => { const p = r.precisione; if (p.bias) Object.keys(bias).forEach(k => bias[k].push.apply(bias[k], p.bias[k] || [])); Object.keys(agg).forEach(k => agg[k].push.apply(agg[k], p.diff[k] || [])); Object.keys(g).forEach(k => { if (p.glob && p.glob[k] != null) g[k].push(p.glob[k]); }); corr += p.corretti || 0; tot += p.totale || 0; });
     const m = a => a.length ? fmt(a.reduce((x, y) => x + y, 0) / a.length, 2) : '—';
     el.innerHTML = '<table class="meas"><tr><td>Referti con lettura automatica</td><td>' + recs.length + ' (foto ' + recs.filter(r => r.precisione.src === 'foto').length + ', PDF ' + recs.filter(r => r.precisione.src !== 'foto').length + ')</td></tr>' +
       '<tr><td>Valori corretti a mano</td><td>' + corr + ' / ' + tot + ' (' + (tot ? Math.round(corr / tot * 100) : 0) + '%)</td></tr>' +
       '<tr><td>Correzione media ST</td><td>' + m(agg.st) + ' mm</td></tr><tr><td>Correzione media R / S</td><td>' + m(agg.r) + ' / ' + m(agg.s) + ' mm</td></tr><tr><td>Correzione media T</td><td>' + m(agg.t) + ' mm</td></tr>' +
+      (bias.r.length || bias.s.length || bias.st.length ? '<tr><td>Errore sistematico (letto − corretto) R / S / ST</td><td>' + m(bias.r) + ' / ' + m(bias.s) + ' / ' + m(bias.st) + ' mm</td></tr>' : '') +
       '<tr><td>Correzione media QRS / QT</td><td>' + m(g.qrs) + ' / ' + m(g.qt) + ' ms</td></tr><tr><td>Correzione media FC</td><td>' + m(g.fc) + ' /min</td></tr></table>';
   }
 
@@ -841,7 +1115,7 @@
     const had = ['ritmo', 'intervalli', 'asse', 'atri', 'morfologia', 'leads', 'extra', 'pattern', 'tcl'].some(k => d[k] && Object.keys(d[k]).length);
     const b = blank();
     ['ritmo', 'intervalli', 'asse', 'atri', 'morfologia', 'leads', 'extra', 'pattern', 'tcl'].forEach(k => { d[k] = b[k]; });
-    d.cal = null; delete d.autoApplied; delete d.fotoDaVerificare;
+    d.cal = null; delete d.autoApplied; delete d.fotoDaVerificare; d.manual = {}; d.asseCalc = {};
     d.tecnica = { velocita: d.tecnica.velocita || '25', guadagno: '10', profilo: d.tecnica.profilo || 'auto' };
     d.id = null; d.creato = null;
     state.overlay = []; state.auto = null;
@@ -1057,6 +1331,17 @@
     if (tab === 'arch') renderArchive();
     if (tab === 'info') renderPrecision();
     if (tab === 'ref') analyze();
+    if (tab === 'calc') renderCalc();
+    if (tab === 'crit' && window.ECGCriteri && !$('#critView').innerHTML) window.ECGCriteri.render($('#critView'));
+    if (tab === 'der') renderLeadTable();
+  }
+  // calcolatori (asse, ST, QTc): ridisegnati a ogni apertura con i dati correnti
+  const CALC_H = { setField: (p, v) => setField(p, v), toast: (m) => toast(m) };
+  function renderCalc() {
+    if (!TL) return;
+    TL.renderAxis($('#calcAxis'), state.data, CALC_H);
+    TL.renderST($('#calcST'), state.data, CALC_H);
+    TL.renderQTc($('#calcQTc'), state.data, CALC_H);
   }
   $('#bottomnav').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) go(b.dataset.tab); });
   document.addEventListener('click', e => { const b = e.target.closest('[data-goto]'); if (b) { closeMenu(); go(b.dataset.goto); } });
@@ -1082,7 +1367,7 @@
     h += '<div class="card"><h3>Avvertenze</h3><p>ECGcheck legge automaticamente foto e PDF dell\'ECG (visione artificiale sul dispositivo, senza intelligenza artificiale "a scatola nera") e applica criteri ECG pubblicati alle misure. I valori letti sono <b>proposte da verificare</b>: lo ST da foto ha un errore tipico di ±0,2–0,5 mm. <b>Non</b> riproduce l\'algoritmo proprietario Queen of Hearts™ (rete neurale non pubblicata). È uno strumento didattico e di supporto, non un dispositivo medico (MDR 2017/745, AI Act): la diagnosi resta medica.</p><p class="hint">I dati restano sul dispositivo (localStorage/IndexedDB). Non inserire dati identificativi.</p></div>';
     h += '<div class="card"><h3>Precisione della lettura automatica</h3><div id="precView"><p class="hint">Calcolo…</p></div><div class="actions"><button class="btn sm" id="precExport">📤 Esporta registro di precisione</button></div><p class="hint">Il registro (senza dati del paziente né immagini) serve alle revisioni periodiche per correggere e migliorare la lettura automatica.</p></div>';
     h += '<div class="card"><h3>Fonti</h3><ol class="refs">' + M.riferimenti.map(r => '<li>' + esc(r) + '</li>').join('') + '</ol></div>';
-    h += '<div class="card"><h3>Registro modifiche</h3><ul class="refs"><li><b>1.2.3 (02/11/2026)</b> – Lettura FOTO: corretto il troncamento dell\'apice delle onde R/S alte (un residuo della griglia vicino alla linea di base "rubava" la traccia sui tratti ripidi: es. R di V6 13 mm letta 9,8 mm; errore medio R da 0,46 a 0,10 mm sulle foto di prova); durata del QRS non più sovrastimata dalla media mobile (+8–10 ms: QRS 90 ms letto 108–114 ms, ora 100–106 ms come nei PDF; evita falsi "ritardi di conduzione aspecifici"); righe del tracciato riconosciute anche a bassa risoluzione (~6 px/mm) con il bordo del foglio su fondo scuro e righe piatte senza impulso scartate nel profilo Automatico; con righe mancanti la qualità non può risultare "buona"; QT: la tangente della T si ferma alla fine della branca discendente e, con FC > 120/min, avviso di possibile sovrapposizione P/T (QT sovrastimato fino a ~30 ms). PDF senza etichette delle derivazioni: con il profilo ELI 280/6×2 ogni riga continua viene divisa in periferica + precordiale (prima veniva interpretata come 3×4). Criteri: recepita la V Definizione Universale di IMA (ESC/ACC/AHA/WHF, Eur Heart J 28/08/2026: IM primario/secondario/correlato a procedura) nei riferimenti e nelle note STEMI/post-cardiochirurgia, soglie ECG di STE invariate in attesa della verifica del capitolo ECG sul testo integrale; iperkaliemia/FV con riferimento ERC 2025. Test: 47 casi del motore dei criteri, 19 foto sintetiche ELI 280/3×4 (18/19 entro gli obiettivi; 1.2.2: 9/19), PDF sintetici.</li><li><b>1.2.2 (01/11/2026)</b> – Sicurezza: i valori letti automaticamente da una FOTO rendono il referto «PROVVISORIO» (scheda Referto, indicatore OMI e PDF) finché l\'operatore non conferma di averli verificati e corretti. Motivo: su 2 foto reali segnalate la lettura ha sbagliato onde P, durata del QRS, asse e ampiezze delle precordiali (voltaggi alti, foto non frontali).</li><li><b>1.2.1 (01/11/2026)</b> – Correzioni dopo segnalazione (ECG con IVS): riconoscimento automatico dello "strain" (ST discendente + T negativa asimmetrica in I, aVL, V4–V6 a R dominante); con IVS lo STE in V1–V3 è valutato con il rapporto STE/S (≥ 25%, Armstrong 2012) e lo STD in V3–V4 a R dominante in continuità con lo strain non attiva più lo STDmax V1–V4 (Meyers 2021: solo STD non spiegato da cause secondarie), con confronto relativo al QRS a parità di STD; QT corto valutato con Bazett e non con il QT modificato per QRS largo; avviso se la frequenza atriale (PP) è incoerente con la FC in conduzione 1:1; avviso per durata P > 160 ms; il caricamento di un nuovo tracciato azzera le misure del precedente (guadagno riportato a 10 mm/mV); dalla foto PR e durata P non vengono più applicati automaticamente.</li><li><b>1.2.0 (01/11/2026)</b> – Lettura automatica delle FOTO: riconoscimento del foglio, orientamento (0/90/180/270°) e raddrizzamento, calibrazione da griglia e impulso di 10 mm, separazione traccia/griglia, inseguimento della traccia, profili apparecchio (ELI 280 6×2, 6×2, 3×4+1, 3×4+3, 3×4, 12×1), indice di qualità con rifiuto delle foto mosse, misure R/S/ST/ST60/T, FC, QRS, QT, asse ai minimi quadrati. Registro di precisione (valori letti vs confermati), segnalazione delle letture errate, revisioni settimanali. Con QRS ≥ 120 ms senza morfologia indicata: avviso che lo ST può essere secondario; "Ritmo a QRS largo" con P non definite declassato ad alto con richiesta di definire le P. Validazione: 4 foto reali ELI 280 (FC ±3/min, QT ±30 ms) e foto simulate (ST errore medio 0,12–0,23 mm).</li><li><b>1.1.0 (31/10/2026)</b> – Lettura automatica degli ECG in PDF (pdf.js integrato, offline): calibrazione da griglia o impulso di taratura, riconoscimento delle derivazioni, R/S/ST/ST60/T per derivazione, ritmo, PR/QRS/QT, lettura delle misure stampate dall\'elettrocardiografo; nuovo reperto "ritmo irregolare senza P definite".</li><li><b>1.0.0 (31/10/2026)</b> – Prima versione: calibro digitale su foto/PDF, motore a regole (ritmo, OMI/STEMI-equivalenti, conduzione SA/AV/IV, asse, camere, pericardite ESC 2025, ripolarizzazione precoce, QT, canalopatie, elettroliti), referto PDF, archivio, revisione programmata.</li></ul></div>';
+    h += '<div class="card"><h3>Registro modifiche</h3><ul class="refs"><li><b>1.3.0 (09/11/2026)</b> – NUOVE FUNZIONI: (1) strumenti di misura guidata nella barra della scheda ECG (PR, QRS, Onda R/S/Q/P/T con ampiezza in mm e mV e durata, ST con linea di base → punto J → J+60 e soglia STEMI della derivazione mostrata subito, QT con QTc, PP, RR, RP con orientamento TRNAV/TRAV), con istruzioni dei tocchi, risultato immediato e «Applica»; la barra scorre orizzontalmente al suo interno; (2) tabella Derivazioni con P, Q, R, S, J, J+60 e T in mm, mV o mm sulla carta (conversione per guadagno 5/10/20 mm/mV) e durate in ms, validazione immediata (range plausibili, Q patologiche, legge di Einthoven); i valori corretti a mano (✎) prevalgono sulla lettura automatica e sono registrati nel registro di precisione (con l\'errore sistematico letto − corretto); (3) nuova scheda «Calcoli»: asse (minimi quadrati con guadagno √3/2 delle aumentate, metodo I/aVF, derivazione isodifasica, sistema esassiale disegnato, QRS netti e asse sovrascrivibili; il motore usa ora l\'asse ai minimi quadrati), ST a 12 derivazioni (J e J+60, soglie per sesso/età, contiguità, reciprocità, STE/S di Armstrong, ST/T, STDmax V1–V4, V4R e V7–V9), QTc (Bazett, Fridericia, Framingham, Hodges, QT modificato di Bogossian, soglie per sesso, ≥ 500 ms, QT corto, Δ ≥ 60 ms, media su più battiti in FA); (4) pagina «Criteri» testuale e offline con tabelle sinottiche e fonti. FOTO: corretta la sovrastima delle R (la traccia di una riga veniva "dirottata" sulla R alta o sulla S profonda della riga vicina nel formato 6×2, es. R di V3 8 mm letta 15–23 mm); le R alte non sono più tagliate a metà distanza tra le righe (R 24 mm letta 14 mm); dove le tracce si toccano il valore è un minimo («≥») e lo ST «n.m.» invece di un valore falso (evitato uno STE fittizio di 4–9 mm in V4); punti base/apice R e S mostrati e trascinabili; QRS/punto J robusti con T precoce e FC alte (QRS letto 160–240 ms → errore ≤ 6 ms) e con linee spesse a 8 px/mm; foto mosse riconosciute e rifiutate. CRITERI: ESC 2026 scompenso (HFrEF < 50%, HFpEF ≥ 50%, HFmrEF abolito); consenso APHRS/JHRS 2026 sulle sindromi dell\'onda J (Shanghai score modificato per Brugada e ripolarizzazione precoce); ST60 di V3 dalla tabella usato dalla formula a 4 variabili. Test: 53 casi del motore + 25 dei calcolatori, 33 foto sintetiche, PDF sintetici, interfaccia a 390 px.</li><li><b>1.2.3 (02/11/2026)</b> – Lettura FOTO: corretto il troncamento dell\'apice delle onde R/S alte (un residuo della griglia vicino alla linea di base "rubava" la traccia sui tratti ripidi: es. R di V6 13 mm letta 9,8 mm; errore medio R da 0,46 a 0,10 mm sulle foto di prova); durata del QRS non più sovrastimata dalla media mobile (+8–10 ms: QRS 90 ms letto 108–114 ms, ora 100–106 ms come nei PDF; evita falsi "ritardi di conduzione aspecifici"); righe del tracciato riconosciute anche a bassa risoluzione (~6 px/mm) con il bordo del foglio su fondo scuro e righe piatte senza impulso scartate nel profilo Automatico; con righe mancanti la qualità non può risultare "buona"; QT: la tangente della T si ferma alla fine della branca discendente e, con FC > 120/min, avviso di possibile sovrapposizione P/T (QT sovrastimato fino a ~30 ms). PDF senza etichette delle derivazioni: con il profilo ELI 280/6×2 ogni riga continua viene divisa in periferica + precordiale (prima veniva interpretata come 3×4). Criteri: recepita la V Definizione Universale di IMA (ESC/ACC/AHA/WHF, Eur Heart J 28/08/2026: IM primario/secondario/correlato a procedura) nei riferimenti e nelle note STEMI/post-cardiochirurgia, soglie ECG di STE invariate in attesa della verifica del capitolo ECG sul testo integrale; iperkaliemia/FV con riferimento ERC 2025. Test: 47 casi del motore dei criteri, 19 foto sintetiche ELI 280/3×4 (18/19 entro gli obiettivi; 1.2.2: 9/19), PDF sintetici.</li><li><b>1.2.2 (01/11/2026)</b> – Sicurezza: i valori letti automaticamente da una FOTO rendono il referto «PROVVISORIO» (scheda Referto, indicatore OMI e PDF) finché l\'operatore non conferma di averli verificati e corretti. Motivo: su 2 foto reali segnalate la lettura ha sbagliato onde P, durata del QRS, asse e ampiezze delle precordiali (voltaggi alti, foto non frontali).</li><li><b>1.2.1 (01/11/2026)</b> – Correzioni dopo segnalazione (ECG con IVS): riconoscimento automatico dello "strain" (ST discendente + T negativa asimmetrica in I, aVL, V4–V6 a R dominante); con IVS lo STE in V1–V3 è valutato con il rapporto STE/S (≥ 25%, Armstrong 2012) e lo STD in V3–V4 a R dominante in continuità con lo strain non attiva più lo STDmax V1–V4 (Meyers 2021: solo STD non spiegato da cause secondarie), con confronto relativo al QRS a parità di STD; QT corto valutato con Bazett e non con il QT modificato per QRS largo; avviso se la frequenza atriale (PP) è incoerente con la FC in conduzione 1:1; avviso per durata P > 160 ms; il caricamento di un nuovo tracciato azzera le misure del precedente (guadagno riportato a 10 mm/mV); dalla foto PR e durata P non vengono più applicati automaticamente.</li><li><b>1.2.0 (01/11/2026)</b> – Lettura automatica delle FOTO: riconoscimento del foglio, orientamento (0/90/180/270°) e raddrizzamento, calibrazione da griglia e impulso di 10 mm, separazione traccia/griglia, inseguimento della traccia, profili apparecchio (ELI 280 6×2, 6×2, 3×4+1, 3×4+3, 3×4, 12×1), indice di qualità con rifiuto delle foto mosse, misure R/S/ST/ST60/T, FC, QRS, QT, asse ai minimi quadrati. Registro di precisione (valori letti vs confermati), segnalazione delle letture errate, revisioni settimanali. Con QRS ≥ 120 ms senza morfologia indicata: avviso che lo ST può essere secondario; "Ritmo a QRS largo" con P non definite declassato ad alto con richiesta di definire le P. Validazione: 4 foto reali ELI 280 (FC ±3/min, QT ±30 ms) e foto simulate (ST errore medio 0,12–0,23 mm).</li><li><b>1.1.0 (31/10/2026)</b> – Lettura automatica degli ECG in PDF (pdf.js integrato, offline): calibrazione da griglia o impulso di taratura, riconoscimento delle derivazioni, R/S/ST/ST60/T per derivazione, ritmo, PR/QRS/QT, lettura delle misure stampate dall\'elettrocardiografo; nuovo reperto "ritmo irregolare senza P definite".</li><li><b>1.0.0 (31/10/2026)</b> – Prima versione: calibro digitale su foto/PDF, motore a regole (ritmo, OMI/STEMI-equivalenti, conduzione SA/AV/IV, asse, camere, pericardite ESC 2025, ripolarizzazione precoce, QT, canalopatie, elettroliti), referto PDF, archivio, revisione programmata.</li></ul></div>';
     h += '<div class="card"><h3>Tema</h3><div class="actions"><button class="btn sm" data-theme-set="">Automatico</button><button class="btn sm" data-theme-set="light">Chiaro</button><button class="btn sm" data-theme-set="dark">Scuro</button></div></div>';
     $('#infoView').innerHTML = h;
     $('#precExport').onclick = exportPrecision;

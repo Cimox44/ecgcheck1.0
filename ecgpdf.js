@@ -268,6 +268,29 @@
     for (let k = Math.max(2, c - 60); k <= c; k++) if (Math.abs(slope(s, k)) > thr) { on = k - 3; break; }
     for (let k = Math.min(n - 2, c + 60); k >= c; k--) if (Math.abs(slope(s, k)) > thr) { off = k + 3; break; }
     if (on === null || off === null || on < 25) return null;
+    // 1.3.0: fine del QRS cercata anche in avanti (primo tratto "fermo" ≥ 12 ms dopo il picco, senza
+    // deflessioni maggiori nei 30 ms seguenti): con T precoce e ripida (FC alte, ST sottoslivellato)
+    // la ricerca all'indietro dal limite di 120 ms finiva sulla branca ascendente della T (QRS > 200 ms)
+    // simmetrico per l'inizio: primo tratto fermo prima del picco (segmento PR) – a FC elevate la T/P
+    // precedente è a ridosso del QRS e la ricerca dal limite di −120 ms partiva dentro la P/T
+    // il tratto fermo deve essere vicino alla linea di base (esclude i "plateau" da tracce tagliate nelle foto)
+    let pMax = -Infinity, pMin = Infinity; for (let k = Math.max(0, c - 30); k <= Math.min(n - 1, c + 30); k++) { pMax = Math.max(pMax, raw[k]); pMin = Math.min(pMin, raw[k]); }
+    const b0 = median(s.slice(Math.max(0, c - 75), Math.max(1, c - 45)));
+    const nearB = k => Math.abs(s[k] - b0) <= Math.max(3, 0.4 * (pMax - pMin));
+    for (let k = c - 4; k > on + 6; k--) {
+      let still = nearB(k); for (let q = k; q > k - 6; q--) if (Math.abs(slope(s, q)) > thr * 1.5) { still = false; break; }
+      if (!still) continue;
+      let big = 0; for (let q = k - 6; q > Math.max(1, k - 21); q--) big = Math.max(big, Math.abs(slope(s, q)));
+      if (big < maxSl * 0.35) { on = k - 3; }
+      break;
+    }
+    for (let k = c + 4; k < off - 6; k++) {
+      let still = nearB(k); for (let q = k; q < k + 6; q++) if (Math.abs(slope(s, q)) > thr * 1.5) { still = false; break; }
+      if (!still) continue;
+      let big = 0; for (let q = k + 6; q < Math.min(n - 1, k + 21); q++) big = Math.max(big, Math.abs(slope(s, q)));
+      if (big < maxSl * 0.35) { off = k + 3; }
+      break;
+    }
     const blS = s.slice(Math.max(0, on - 20), Math.max(1, on - 4));
     const base = median(blS);
     // onda R = massimo locale seguito da una discesa >= 0,3 mm (esclude il punto J sopraslivellato)
@@ -345,7 +368,7 @@
     const pick = k => { const v = use.map(b => b[k]).filter(v => v !== null && v !== undefined && isFinite(v)); return v.length ? median(v) : null; };
     const toX = idx => x0 + (idx + start) * dxmm; // mm
     return {
-      sig, start, x0, dxmm, peaks, beats,
+      sig, raw, start, x0, dxmm, peaks, beats,
       R: pick('R'), S: pick('S'), Q: pick('Q'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'),
       n: use.length,
       marks: use.map(b => ({ j: toX(b.off), on: toX(b.on), r: toX(b.rI), base: b.base, jy: sig[b.off], ry: sig[b.rI] })),
@@ -353,6 +376,18 @@
     };
   }
 
+  // 1.3.0: punti usati per R e S (battito più vicino alla mediana) – base, apice R, nadir S – trascinabili nell'app
+  function apexMarks(L, nm, ppm, gain) {
+    const bb = L.beats.filter(b => b.complete).length ? L.beats.filter(b => b.complete) : L.beats;
+    if (!bb.length) return [];
+    const kB = bb.slice().sort((p, q) => Math.abs(p.R - L.R) - Math.abs(q.R - L.R))[0];
+    const yPx = v => -v * ppm / (10 / gain), out = [];
+    let sI = kB.rI; for (let k = Math.max(kB.on, kB.rI); k <= kB.off; k++) if (L.sig[k] < L.sig[sI]) sI = k;
+    const bx = L.toX(kB.on) * ppm, by = yPx(kB.base);
+    if (L.R && kB.rI >= 0) out.push({ t: 'apex', lead: nm, k: 'r', x: L.toX(kB.rI) * ppm, y: yPx((L.raw || L.sig)[kB.rI]), bx, by });
+    if (L.S) out.push({ t: 'apex', lead: nm, k: 's', x: L.toX(sI) * ppm, y: yPx(L.sig[sI]), bx, by });
+    return out;
+  }
   function analyzeRhythm(L) {
     const sig = L.sig, beats = L.beats;
     if (beats.length < 2) return null;
@@ -509,6 +544,7 @@
         overlay.push({ t: 'j', x: mk.j * ptPerMm, y: -mk.jy * ptPerMm / (10 / gain) });
         overlay.push({ t: 'base', x0: mk.on * ptPerMm - 3 * ptPerMm, x1: mk.on * ptPerMm, y: -mk.base * ptPerMm / (10 / gain) });
       });
+      apexMarks(r, sg.name, ptPerMm, gain).forEach(o => overlay.push(o));
     });
     // ritmo
     let rhythm = null;
@@ -540,5 +576,5 @@
     return { ok: true, ptPerMm, calMethod, speed, gain, layout: A.mode, machine: M, textLines: lines, leads, rhythm, glob, overlay, warnings };
   }
 
-  root.ECGPdf = { analyzePdf, analyzeExtracted, lib, signal: { analyzeLead, analyzeRhythm, median, pct, mean }, _test: { classify, gridSpacing, machineText, analyzeLead, normLabel } };
+  root.ECGPdf = { analyzePdf, analyzeExtracted, lib, signal: { analyzeLead, analyzeRhythm, apexMarks, median, pct, mean }, _test: { classify, gridSpacing, machineText, analyzeLead, normLabel } };
 })(typeof window !== 'undefined' ? window : this);

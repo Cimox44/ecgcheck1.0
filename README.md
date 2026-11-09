@@ -1,4 +1,4 @@
-# ECGcheck 1.2.3 — Analisi ECG assistita (PWA)
+# ECGcheck 1.3.0 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -13,9 +13,11 @@ separa le 12 derivazioni, misura R/S/ST/T, FC, PR, QRS, QT, asse → applica i c
 
 | File | Contenuto |
 |---|---|
-| `index.html` | Struttura dell'app (schede ECG, Ritmo, Derivazioni, Pattern, Referto, Archivio, Catalogo, Info) |
+| `index.html` | Struttura dell'app (schede ECG, Ritmo, Derivazioni, Calcoli, Pattern, Referto, Criteri, Archivio, Catalogo, Info) |
 | `style.css` | Grafica (tema chiaro/scuro, stampa) |
 | `criteria.js` | **Motore dei criteri** con fonti, versione e date di revisione (`META`) |
+| `tools.js` | **Calcolatori** (asse esassiale, tabella ST a 12 derivazioni, QTc) e validazione/conversione mm–mV delle onde |
+| `criteri.js` | **Pagina «Criteri»**: testo con tabelle sinottiche e fonti (consultabile offline) |
 | `app.js` | Interfaccia, visualizzatore con calibro, lettura automatica, archivio, PDF, notifiche, registro di precisione |
 | `ecgphoto.js` | **Lettore automatico di FOTO ECG** (visione artificiale in JavaScript, offline) |
 | `ecgpdf.js` | **Lettore automatico di ECG in PDF** + motore di misura del segnale (battiti, R/S/ST/T, intervalli) |
@@ -70,8 +72,9 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 
 1. **ECG** → 📷 foto o 📂 PDF → l'app legge il tracciato e mostra la scheda *Lettura automatica*
    (qualità, misure, punti colorati sul tracciato) → controlla → **Applica**.
-2. Se la lettura non riesce: **Calibra** (due punti della griglia a distanza nota) → **Calibro** → *Assegna*;
-   **Marca R / Marca P** per FC, RR, regolarità.
+2. Se la lettura non riesce o un valore è sbagliato: **Calibra** → strumenti guidati **PR, QRS, Onda, ST, QT, PP, RR, RP**
+   (tocchi indicati passo per passo, poi *Applica*); **Marca R / Marca P** per FC, RR, regolarità; trascina i rombi
+   di apice R/S letti dalla foto.
 3. **Ritmo**, **Derivazioni**, **Pattern**: completa la morfologia (onde P, BBDx/BBSx, ecc.). Con QRS ≥ 120 ms
    indica sempre la morfologia: l'app avvisa che lo ST può essere secondario.
 4. **Referto**: esito OMI, ritmo, misure, reperti con fonti → 📄 PDF, 📤 Invia, 🖨 Stampa, 💾 Archivio.
@@ -82,23 +85,23 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 ## Revisioni a breve termine
 
 - Revisione **settimanale** programmata (lunedì): criteri, linee guida nuove, test automatici
-  (47 casi del motore dei criteri, PDF sintetici, 19 foto sintetiche ELI 280 6×2 e 3×4+1 ruotate/prospettiche/
-  sfocate/rumorose/JPEG a 5–8 px/mm e FC 50–130/min), correzioni.
+  (53 casi del motore dei criteri + 25 dei calcolatori, PDF sintetici, 33 foto sintetiche ELI 280 6×2 e 3×4+1
+  ruotate/prospettiche/sfocate/mosse/JPEG a 5–8 px/mm, FC 50–130/min, R fino a 25 mm con righe vicine), correzioni.
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
 
-## Ultima revisione — 1.2.3 (02/11/2026)
+## Ultima revisione — 1.3.0 (09/11/2026)
 
 | Area | Modifica |
 |---|---|
-| Foto – ampiezze | Apice delle R/S alte non più troncato (errore medio R 0,46 → 0,10 mm) |
-| Foto – QRS | Durata non più allargata dalla media mobile (QRS 90 ms: 108–114 → 100–106 ms) |
-| Foto – righe | Righe trovate anche a ~6 px/mm con bordo del foglio su fondo scuro; righe piatte scartate |
-| Foto – qualità | Con derivazioni mancanti la qualità non può essere "buona" |
-| QT | Tangente limitata alla branca discendente della T; avviso con FC > 120/min (P sulla T) |
-| PDF | Senza etichette e con profilo ELI 280/6×2: righe continue divise in periferica + precordiale |
-| Criteri | V Definizione Universale di IMA 2026 nei riferimenti; ERC 2025 per iperkaliemia/FV |
+| Strumenti guidati | Barra ECG: PR, QRS, Onda (R/S/Q/P/T: ampiezza mm/mV + durata), ST (base → J → J+60 con soglia STEMI della derivazione), QT/QTc, PP, RR, RP; ogni strumento con istruzioni dei tocchi, risultato immediato e «Applica» |
+| Onde manuali | Tabella Derivazioni con P, Q, R, S, J, J+60, T in mm, mV o mm sulla carta (guadagno 5/10/20) e durate in ms; validazione immediata; i valori corretti a mano (✎) prevalgono sulla lettura automatica e vanno nel registro di precisione |
+| Foto – onda R | Corretta la sovrastima: con tracce di righe vicine fuse (R alte/S profonde nel 6×2) la traccia non viene più "dirottata" sulla riga vicina; le R alte non sono più tagliate a ~16 mm; valore minimo «≥» e ST «n.m.» dove le tracce si toccano; punti base/apice trascinabili sul tracciato |
+| Foto – misure | QRS e punto J più robusti (FC alte, T precoci, linee spesse a 8 px/mm); foto mosse riconosciute (nitidezza direzionale) |
+| Calcolatori | Asse (minimi quadrati, I/aVF, isodifasica, sistema esassiale disegnato, sovrascrivibile); ST a 12 derivazioni (soglie per sesso/età, contiguità, reciprocità, Armstrong, ST/T, Meyers); QTc (Bazett, Fridericia, Framingham, Hodges, Bogossian, media su più battiti) |
+| Criteri (testo) | Nuova pagina con IVS/IVD, OMI/STEMI-equivalenti, pericardite, ripolarizzazione precoce e Shanghai score 2026, BAV, blocchi di branca, TRNAV/TRAV, FA/flutter, pacemaker, QT |
+| Linee guida | ESC 2026 scompenso (HFmrEF abolito: HFrEF < 50%, HFpEF ≥ 50%); consenso APHRS/JHRS 2026 sulle sindromi dell'onda J (Shanghai score modificato) |
 
 ## Privacy
 

@@ -43,6 +43,15 @@
           <button class="tool" data-mode="mis" title="Calibro">⏱<span>Calibro</span></button>
           <button class="tool" data-mode="r" title="Segna onde R">R<span>Marca R</span></button>
           <button class="tool" data-mode="p" title="Segna onde P">P<span>Marca P</span></button>
+          <span class="tool-sep" aria-hidden="true"></span>
+          <button class="tool g" data-mode="g-pr" title="Misura guidata del PR">PR<span>PR</span></button>
+          <button class="tool g" data-mode="g-qrs" title="Misura guidata del QRS">QRS<span>Durata</span></button>
+          <button class="tool g" data-mode="g-r" title="Onda R: ampiezza e durata">R↕<span>Onda R</span></button>
+          <button class="tool g" data-mode="g-st" title="ST al punto J e J+60">ST<span>J / J+60</span></button>
+          <button class="tool g" data-mode="g-qt" title="Misura guidata del QT">QT<span>QT/QTc</span></button>
+          <button class="tool g" data-mode="g-pp" title="Intervallo PP">PP<span>Atri</span></button>
+          <button class="tool g" data-mode="g-rr" title="Intervallo RR">RR<span>FC</span></button>
+          <button class="tool g" data-mode="g-rp" title="Intervallo RP (TSV)">RP<span>TSV</span></button>
         </div>
         <div class="toolbar sub">
           <button class="tool" id="zoomIn" title="Ingrandisci">＋</button>
@@ -81,12 +90,23 @@
     <!-- ======================= DERIVAZIONI ======================= -->
     <section id="tab-der" class="tab">
       <div class="card">
-        <h3>Ampiezze per derivazione (mm, 10 mm/mV)</h3>
-        <p class="hint">R e S in valore assoluto. ST misurato al punto J rispetto al PR/TP (positivo = sopra, negativo = sotto). T con segno. Lascia vuoto ciò che non hai misurato. Usa ± per cambiare il segno.</p>
+        <h3>Onde per derivazione</h3>
+        <p class="hint">Inserisci o correggi P, Q, R, S, T, ST al punto J e ST a J+60 ms. Q, R e S in valore assoluto; P, T e ST con segno (+ sopra, − sotto la linea PR/TP). Unità: mm a 10 mm/mV, mV, oppure mm misurati sulla carta al guadagno impostato (5/10/20 mm/mV: conversione automatica). I valori modificati a mano (✎) prevalgono sulla lettura automatica e sono registrati nel registro di precisione.</p>
+        <div class="seg" id="leadMode" role="tablist">
+          <button data-lm="mm" class="active">Ampiezze mm</button><button data-lm="mV">mV</button><button data-lm="carta">mm carta</button><button data-lm="dur">Durate ms</button>
+        </div>
         <div class="lead-table-wrap"><table class="lead-table" id="leadTable"></table></div>
+        <div class="actions"><button class="btn sm" id="leadSign">± cambia segno</button><button class="btn sm" data-goto="calc">🧮 Asse, ST, QTc</button></div>
+        <div id="leadValid" class="lead-valid"></div>
       </div>
       <div class="card"><h3>Derivazioni aggiuntive e misure OMI</h3><div class="grid2" id="formExtra"></div></div>
     </section>
+
+    <!-- ======================= CALCOLATORI ======================= -->
+    <section id="tab-calc" class="tab"><div id="calcAxis"></div><div id="calcST"></div><div id="calcQTc"></div></section>
+
+    <!-- ======================= CRITERI (testo) ======================= -->
+    <section id="tab-crit" class="tab"><div id="critView"></div></section>
 
     <!-- ======================= PATTERN ======================= -->
     <section id="tab-pat" class="tab"><div id="formPattern"></div></section>
@@ -123,6 +143,7 @@
     <button data-tab="ecg" class="active"><span>📈</span>ECG</button>
     <button data-tab="ritmo"><span>💓</span>Ritmo</button>
     <button data-tab="der"><span>▦</span>Derivazioni</button>
+    <button data-tab="calc"><span>🧮</span>Calcoli</button>
     <button data-tab="pat"><span>🔍</span>Pattern</button>
     <button data-tab="ref"><span>📋</span>Referto<i id="critBadge" class="badge hidden">0</i></button>
   </nav>
@@ -130,6 +151,8 @@
   <div id="menu" class="sheet hidden" role="dialog" aria-label="Menu">
     <div class="sheet-body">
       <button data-goto="arch">🗂 Archivio referti</button>
+      <button data-goto="crit">📚 Criteri ECG (testo)</button>
+      <button data-goto="calc">🧮 Calcolatori: asse, ST, QTc</button>
       <button data-goto="cat">✅ Diagnosi supportate</button>
       <button data-goto="info">ℹ️ Criteri, fonti e revisioni</button>
       <button id="menuNew">＋ Nuovo ECG</button>
@@ -138,6 +161,8 @@
   </div>
 
   <script src="criteria.js"></script>
+  <script src="tools.js"></script>
+  <script src="criteri.js"></script>
   <script src="minipdf.js"></script>
   <script src="ecgpdf.js"></script>
   <script src="ecgphoto.js"></script>

@@ -420,7 +420,7 @@
     return ok;
   }
 
-  function trackRow(dm, W, H, base, lim0, lim1, pxmm, xStart) {
+  function trackRow(dm, W, H, base, lim0, lim1, pxmm, xStart, nbU, nbD) {
     const ya = Math.max(0, Math.round(lim0)), yb = Math.min(H - 1, Math.round(lim1));
     const cols = new Array(W).fill(null);
     // spessore tipico della linea
@@ -429,8 +429,26 @@
     const th = Math.max(1, median(thick) || 2);
     // punto di partenza: colonna con traccia vicina alla linea di base
     let prev = null, gap = 0, maxJump = pxmm * 3;
+    const merged = new Uint8Array(W); let beyond = 0;
+    const mid0 = nbU != null ? (nbU + base) / 2 : null, mid1 = nbD != null ? (nbD + base) / 2 : null;
+    // la corsa tocca la linea di base della riga vicina (o il bordo della finestra verso di essa)
+    const tol = th * 1.5 + pxmm * 0.4;
+    const nearNb = (r, nb) => nb != null && (nb < base ? r[0] <= Math.max(nb + tol, ya + 1) : r[1] >= Math.min(nb - tol, yb - 1));
+    const ownB = r => r[0] <= base + pxmm * 2.5 && r[1] >= base - pxmm * 2.5;
     for (let x = Math.max(0, Math.round(xStart || 0)); x < W; x++) {
-      const runs = columnRuns(dm, W, x, ya, yb);
+      // corse della colonna; quelle "ancorate" alla linea di base della riga vicina appartengono a quella riga
+      // (R alta della riga sotto / S profonda della riga sopra, registrate in contemporanea nel 6×2):
+      // se non toccano la nostra linea di base sono scartate, se la toccano (tracce fuse) vengono tagliate
+      // alla metà della distanza tra le righe e la colonna è marcata come "fusa" (misura da verificare)
+      const runs = [];
+      columnRuns(dm, W, x, ya, yb).forEach(r0 => {
+        const r = r0.slice(); const u = nearNb(r, nbU), d = nearNb(r, nbD);
+        if (!u && !d) { runs.push(r); return; }
+        if (!ownB(r)) return;
+        if (u) { r[0] = Math.max(r[0], mid0); merged[x] |= 1; }
+        if (d) { r[1] = Math.min(r[1], mid1); merged[x] |= 2; }
+        if (r[1] >= r[0]) runs.push(r);
+      });
       if (!runs.length) { gap++; if (gap > pxmm * 4) prev = null; continue; }
       let best = null, bd = Infinity;
       const ref = prev || [base, base];
@@ -445,6 +463,13 @@
       const lim = prev ? maxJump + gap * pxmm * 0.6 : pxmm * 2.5;
       if (bd > lim) { gap++; if (gap > pxmm * 4) prev = null; continue; }
       cols[x] = best; prev = best; gap = 0;
+      // traccia "dirottata" sulla riga vicina: oltre la metà della distanza tra le righe per > 2 mm (80 ms)
+      // nessuna onda del QRS resta così a lungo lontana dalla linea di base → si cancella e si riaggancia
+      const cy = (best[0] + best[1]) / 2;
+      const far = (mid0 !== null && best[1] < mid0) || (mid1 !== null && best[0] > mid1);
+      if (far) { beyond++; if (beyond > pxmm * 2) { for (let k = x - beyond + 1; k <= x; k++) cols[k] = null; prev = null; beyond = 0; } }
+      else beyond = 0;
+      void cy;
     }
     // linee verticali isolate (griglia residua) incrociate dalla traccia: la colonna ha una corsa
     // lunga ma le colonne a ±2 px hanno corse brevi alla stessa altezza → si ignora la linea
@@ -459,7 +484,7 @@
         if (cols[x + 1] && L(cols[x + 1]) >= pxmm * 2) cols[x + 1] = [y - th / 2, y + th / 2];
       }
     }
-    return { cols, th };
+    return { cols, th, merged };
   }
   function colsToPoints(cols, th, x0, x1) {
     const pts = []; let prevY = null;
@@ -467,7 +492,10 @@
     for (let x = x0; x <= x1; x++) {
       const r = cols[x]; if (!r) continue;
       let t = r[0] + h, b = r[1] - h; if (b < t) { t = b = (r[0] + r[1]) / 2; }
-      if (b - t < 0.75) { pts.push([x, (t + b) / 2]); prevY = (t + b) / 2; continue; }
+      // tratto quasi orizzontale (corsa ≈ spessore della linea): un solo punto al centro.
+      // 1.3.0: soglia proporzionale allo spessore – con linee spesse (foto a 8 px/mm) i due punti
+      // alternati alto/basso creavano un "dente di sega" che allargava QRS e falsava ST
+      if (b - t < 0.75 || r[1] - r[0] + 1 <= th * 1.6 + 1.5) { pts.push([x, (r[0] + r[1]) / 2]); prevY = (r[0] + r[1]) / 2; continue; }
       const nxt = cols[x + 1];
       const nyc = nxt ? (nxt[0] + nxt[1]) / 2 : null;
       // ordine verticale: dal lato più vicino al punto precedente verso quello del successivo
@@ -552,16 +580,19 @@
      ===================================================================== */
   function sharpness(ch, thr) {
     // pendenza media del bordo della traccia normalizzata sul contrasto e sui px/mm
-    const { W, H, lum } = ch; const g = []; let tr = [], bg = [];
+    const { W, H, lum } = ch; const g = [], gxs = [], gys = []; let tr = [], bg = [];
     for (let y = 1; y < H - 1; y += 2) for (let x = 1; x < W - 1; x += 2) {
       const i = y * W + x; const l = lum[i];
       if (l < thr) tr.push(l); else if (bg.length < 200000) bg.push(l);
       const gx = lum[i + 1] - lum[i - 1], gy = lum[i + W] - lum[i - W];
       const m = Math.hypot(gx, gy) / 2;
-      if (l < thr + 25 && l > thr - 25) g.push(m);
+      if (l < thr + 25 && l > thr - 25) { g.push(m); gxs.push(Math.abs(gx) / 2); gys.push(Math.abs(gy) / 2); }
     }
     const contrast = (median(bg) || 170) - (median(tr) || 80);
-    return { edge: pctl(g, 0.9) || 0, contrast };
+    // 1.3.0: nitidezza direzionale – il mosso (trascinamento in una direzione) abbassa i bordi in quella
+    // direzione ma non nell'altra: si usa il rapporto tra le due e il minimo
+    const ex = pctl(gxs, 0.95) || 0, ey = pctl(gys, 0.95) || 0;
+    return { edge: pctl(g, 0.9) || 0, contrast, ex, ey, dir: Math.max(ex, ey) > 0 ? Math.min(ex, ey) / Math.max(ex, ey) : 1 };
   }
 
   /* =====================================================================
@@ -667,19 +698,41 @@
       });
       const ends = pls.filter(o => o.L).map(o => o.L.xEnd);
       const commonStart = ends.length ? median(ends) : null;
-      const rows = ys.map((y, i) => {
-        const lim0 = i ? (ys[i - 1] + y) / 2 - pxmm * 3 : y - pxmm * 25;
-        const lim1 = i < ys.length - 1 ? (ys[i + 1] + y) / 2 + pxmm * 3 : y + pxmm * 25;
+      let rows = ys.map((y, i) => {
+        // 1.3.0: la traccia può estendersi fino a ~1 mm dalla linea di base della riga vicina (R/S alte):
+        // prima il limite era la metà della distanza + 3 mm (R > ~16 mm "tagliate")
+        const nbU = i ? ys[i - 1] : null, nbD = i < ys.length - 1 ? ys[i + 1] : null;
+        const lim0 = nbU !== null ? Math.min(nbU + pxmm * 1.2, (nbU + y) / 2 - pxmm * 3) : y - pxmm * 25;
+        const lim1 = nbD !== null ? Math.max(nbD - pxmm * 1.2, (nbD + y) / 2 + pxmm * 3) : y + pxmm * 25;
         const xStart = pls[i].L ? pls[i].L.xEnd + pxmm * 0.6 : commonStart !== null ? commonStart + pxmm * 0.6 : 0;
         const okc = rowComponents(cc, outW, y, pxmm, xStart);
         const sub = new Uint8Array(outW * outH);
         const ya = Math.max(0, Math.round(lim0)), yb = Math.min(outH - 1, Math.round(lim1));
         for (let yy = ya; yy <= yb; yy++) for (let x = Math.round(xStart); x < outW; x++) { const k = yy * outW + x; if (dmask[k] && okc.has(cc.lab[k])) sub[k] = 1; }
-        const tk = trackRow(sub, outW, outH, y, lim0, lim1, pxmm, xStart);
-        const ext = rowExtent(tk.cols, pxmm);
-        const pts = ext.x0 >= 0 ? colsToPoints(tk.cols, tk.th, ext.x0, ext.x1) : [];
-        return { y, cols: tk.cols, th: tk.th, ext, pts, pulseL: pls[i].L, pulseR: pls[i].R, xStart };
-      }).filter(r => r.ext.x1 - r.ext.x0 > pxmm * 40);
+        const tk = trackRow(sub, outW, outH, y, lim0, lim1, pxmm, xStart, nbU, nbD);
+        return { y, cols: tk.cols, th: tk.th, pulseL: pls[i].L, pulseR: pls[i].R, xStart, merged: tk.merged };
+      });
+      // 1.3.0 – tracce sovrapposte tra righe adiacenti (6×2: QRS simultanei; R alta della riga sotto che
+      // incontra la S profonda della riga sopra): nelle colonne in cui le due righe rivendicano gli stessi
+      // pixel la proprietà non è decidibile → entrambe vengono limitate alla metà della distanza e la colonna
+      // è marcata "fusa": la misura diventa un limite inferiore ("≥") da verificare, mai una sovrastima.
+      for (let i = 1; i < rows.length; i++) {
+        const A = rows[i - 1], B = rows[i]; const mid = (A.y + B.y) / 2;
+        if (B.y - A.y > pxmm * 60) continue;
+        const w = Math.max(2, Math.round(pxmm * 0.6));
+        const hit = (C, x, test) => { for (let k = Math.max(0, x - w); k <= Math.min(outW - 1, x + w); k++) if (C[k] && test(C[k])) return true; return false; };
+        const clipA = [], clipB = [];
+        for (let x = 0; x < outW; x++) {
+          const a = A.cols[x], b = B.cols[x];
+          // la parte oltre la metà tocca (±0,6 mm) la traccia dell'altra riga → tracce fuse
+          if (a && a[1] > mid && hit(B.cols, x, r => r[0] <= a[1] + 1)) clipA.push(x);
+          if (b && b[0] < mid && hit(A.cols, x, r => r[1] >= b[0] - 1)) clipB.push(x);
+        }
+        clipA.forEach(x => { const a = A.cols[x]; A.cols[x] = [Math.min(a[0], mid), mid]; A.merged[x] |= 2; });
+        clipB.forEach(x => { const b = B.cols[x]; B.cols[x] = [mid, Math.max(b[1], mid)]; B.merged[x] |= 1; });
+      }
+      rows.forEach(r => { r.ext = rowExtent(r.cols, pxmm); r.pts = r.ext.x0 >= 0 ? colsToPoints(r.cols, r.th, r.ext.x0, r.ext.x1) : []; });
+      rows = rows.filter(r => r.ext.x1 - r.ext.x0 > pxmm * 40);
       return selectRows(rows, pxmm, prefRows);
     };
     let rows = analyseRows(dm);
@@ -715,7 +768,7 @@
       if (!prof) { warnings.push('Righe trovate: ' + n + '. Formato non riconosciuto: seleziona il profilo dell\'apparecchio.'); prof = PROFILES.std6x2; }
     }
     if (rows.length < prof.righe) warnings.push('Righe trovate ' + rows.length + ' su ' + prof.righe + ' attese per il profilo scelto.');
-    const leads = {}, overlay = [], segs = [];
+    const leads = {}, overlay = [], segs = [], limLeads = [];
     let rhythmPts = null, rhythmName = null;
     // inizio comune delle derivazioni: fine degli impulsi (mediana), altrimenti inizio della traccia
     const pEnds = pulses.filter(o => o.p).map(o => o.p.xEnd);
@@ -741,6 +794,29 @@
           overlay.push({ t: 'j', x: mk.j * pxmm, y: -mk.jy * pxmm / (10 / gain) });
           overlay.push({ t: 'base', x0: (mk.on - 3) * pxmm, x1: mk.on * pxmm, y: -mk.base * pxmm / (10 / gain) });
         });
+        // 1.3.0: tracce fuse con la riga vicina nel QRS → R (lato alto) / S (lato basso) = limite inferiore
+        const usedB = L.beats.filter(b => b.complete); const bb = usedB.length ? usedB : L.beats;
+        let mR = 0, mS = 0;
+        bb.forEach(b => { const xa = Math.floor(L.toX(b.on) * pxmm), xb = Math.ceil(L.toX(b.off) * pxmm); let f = 0; for (let x = Math.max(0, xa); x <= Math.min(outW - 1, xb); x++) f |= (r.merged ? r.merged[x] : 0); if (f & 1) mR++; if (f & 2) mS++; });
+        L.rLim = bb.length > 0 && mR >= bb.length / 2; L.sLim = bb.length > 0 && mS >= bb.length / 2;
+        // ST misurato solo sui battiti con il punto J lontano (> 1,5 mm) da colonne fuse
+        if (r.merged && (mR || mS)) {
+          // battiti con colonne fuse nel QRS: punto J (e quindi ST, ST60, QRS) non affidabile
+          const okB = bb.filter(b => { const xa = L.toX(b.on) * pxmm - pxmm, xb = L.toX(b.off) * pxmm + pxmm * 1.5; for (let x = Math.max(0, Math.floor(xa)); x <= Math.min(outW - 1, Math.ceil(xb)); x++) if (r.merged[x]) return false; return true; });
+          const md = k => { const v = okB.map(b => b[k]).filter(v => v != null && isFinite(v)); return v.length ? median(v) : null; };
+          if (okB.length < bb.length) { L.st = md('st'); L.st60 = md('st60'); L.qrs = md('qrs'); L.stLim = L.st === null; }
+        }
+        // punti usati per R e S (battito più vicino alla mediana): base, apice R, nadir S – trascinabili nell'app
+        const kB = bb.length ? bb.slice().sort((p, q) => Math.abs(p.R - L.R) - Math.abs(q.R - L.R))[0] : null;
+        if (kB) {
+          const yPx = v => -v * pxmm / (10 / gain);
+          let sI = kB.rI; for (let k = Math.max(kB.on, kB.rI); k <= kB.off; k++) if (L.sig[k] < L.sig[sI]) sI = k;
+          const rawR = kB.rI >= 0 ? (L.raw || L.sig)[kB.rI] : null;
+          const bx = L.toX(kB.on) * pxmm;
+          if (L.R) overlay.push({ t: 'apex', lead: nm, k: 'r', x: L.toX(kB.rI) * pxmm, y: yPx(rawR != null ? rawR : L.sig[kB.rI]), bx, by: yPx(kB.base), lim: L.rLim });
+          if (L.S) overlay.push({ t: 'apex', lead: nm, k: 's', x: L.toX(sI) * pxmm, y: yPx(L.sig[sI]), bx, by: yPx(kB.base), lim: L.sLim });
+        }
+        if (L.rLim || L.sLim || L.stLim) limLeads.push(nm + (L.rLim ? ' (R)' : '') + (L.sLim ? ' (S)' : '') + (L.stLim ? ' (ST non misurabile)' : ''));
       });
     });
     // ritmo: striscia dedicata, altrimenti la riga indicata dal profilo (es. II + V2 nell'ELI 280)
@@ -777,6 +853,7 @@
     const qtT = Object.keys(leads).filter(k => leads[k].qt && leads[k].T !== null && Math.abs(leads[k].T) >= 1.5).map(k => leads[k].qt);
     const qtAll = qtT.length >= 3 ? qtT : Object.values(leads).map(l => l.qt).filter(v => v);
     const glob = { qrs: qrsAll.length ? S.pct(qrsAll, 0.75) : null, qt: qtAll.length ? median(qtAll) : null, pr: rhythm ? rhythm.pr : null, p: rhythm ? rhythm.pDur : null };
+    if (limLeads.length) warnings.push('Tracce sovrapposte alla riga vicina in ' + limLeads.join(', ') + ': ampiezza misurata fino al punto di contatto (di norma un valore minimo, «≥», da verificare). Trascina il punto dell\'apice sul tracciato o misura con lo strumento «Onda R».');
     if (rhythm && rhythm.hr > 120 && glob.qt) warnings.push('FC > 120/min: la P successiva può sovrapporsi alla fine della T e far sovrastimare il QT (fino a ~30 ms): verifica il QT manualmente.');
     // asse: minimi quadrati sulle 6 periferiche (sistema esassiale)
     const ANG = { I: 0, II: 60, III: 120, aVR: -150, aVL: -30, aVF: 90 };
@@ -786,12 +863,16 @@
 
     // 9) indice di qualità
     const sh = sharpness(ch, dk.thr);
-    const sharpN = sh.contrast > 0 ? sh.edge / sh.contrast * (7 / pxmm) : 0; // indipendente da risoluzione e contrasto
+    const sharpN0 = sh.contrast > 0 ? sh.edge / sh.contrast * (7 / pxmm) : 0; // indipendente da risoluzione e contrasto
+    // 1.3.0: nitidezza direzionale (foto mossa: bordi persi in una sola direzione)
+    const sharpD = sh.contrast > 0 ? Math.min(sh.ex, sh.ey) / sh.contrast * (7 / pxmm) : 0;
+    const sharpN = Math.min(sharpN0, sharpD);
+    const mossa = sh.dir < 0.5 || sharpD < 0.22;
     const covs = Object.values(leads).map(l => l.cov).filter(v => v != null);
     const cov = covs.length ? median(covs) : 0;
     const Q = [];
     const add = (nome, val, punti, nota) => Q.push({ nome, val, punti, nota });
-    add('Nitidezza', sharpN, sharpN >= 0.30 ? 30 : sharpN >= 0.2 ? 18 : sharpN >= 0.14 ? 6 : 0, sharpN >= 0.3 ? 'buona' : sharpN >= 0.2 ? 'accettabile' : 'foto mossa o sfocata');
+    add('Nitidezza', sharpN, mossa ? 0 : sharpN >= 0.30 ? 30 : sharpN >= 0.2 ? 18 : sharpN >= 0.14 ? 6 : 0, mossa ? 'foto mossa o sfocata' : sharpN >= 0.3 ? 'buona' : sharpN >= 0.2 ? 'accettabile' : 'foto mossa o sfocata');
     add('Risoluzione', pxmm, pxmm >= 6 ? 20 : pxmm >= 4.5 ? 12 : pxmm >= 3.5 ? 5 : 0, pxmm.toFixed(1) + ' px/mm' + (pxmm < 4.5 ? ' (avvicinati)' : ''));
     add('Continuità della traccia', cov, cov >= 0.97 ? 20 : cov >= 0.9 ? 12 : cov >= 0.8 ? 5 : 0, Math.round(cov * 100) + '%');
     add('Righe del tracciato', rows.length, rows.length >= prof.righe ? 10 : 0, rows.length + '/' + prof.righe);
@@ -800,6 +881,7 @@
     let score = Math.round(Q.reduce((a, q) => a + q.punti, 0));
     // derivazioni mancanti: la lettura non può essere "buona" anche se la foto è nitida
     if (rows.length < prof.righe) score = Math.min(score, 74);
+    if (mossa) { score = Math.min(score, 40); warnings.unshift('Foto mossa o sfocata (bordi della traccia ' + (sh.dir < 0.5 ? 'trascinati in una direzione' : 'poco definiti') + '): le misure non sono affidabili.'); }
     const level = score >= 75 ? 'buona' : score >= 50 ? 'accettabile' : 'insufficiente';
     if (level === 'insufficiente') warnings.unshift('Qualità insufficiente: rifai la foto (foglio piatto, telefono parallelo, buona luce, niente movimento).');
 
@@ -809,7 +891,7 @@
       calMethod: 'griglia della foto (' + pxmm.toFixed(2) + ' px/mm)' + (pulseMm ? ' + impulso ' + pulseMm.toFixed(1) + ' mm' : ''),
       speed, gain, layout: profKey === 'auto' ? 'auto: ' + prof.nome : prof.nome, rows: rows.length,
       leads, rhythm, glob, overlay, warnings, machine: {}, textLines: [], rect, ms: Date.now() - t0,
-      debug: opts.debug ? { rows: rows.map(r => ({ y: r.y, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
+      debug: opts.debug ? { rows: rows.map(r => ({ y: r.y, th: r.th, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
     };
 
     function fail(msg) { return { ok: false, source: 'foto', quality: { score: 0, level: 'insufficiente', items: [] }, warnings: [msg], leads: {}, overlay: [], machine: {}, textLines: [], glob: {}, rhythm: null, ms: Date.now() - t0 }; }
