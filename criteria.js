@@ -8,7 +8,7 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.3.3',
+    version: '1.3.4',
     criteriaVersion: '2026.11.5',
     lastReview: '2026-11-10',
     nextReview: '2026-11-16',
@@ -749,7 +749,8 @@
       const p = d.pattern || {};
       F.add(CAT.CAMERE, 'bassi-volt', 'Bassi voltaggi del QRS' + (lowLimb && lowPrec ? ' (periferici e precordiali)' : lowLimb ? ' (periferici)' : ' (precordiali)'), LIV.MOD,
         ['QRS < 5 mm in tutte le periferiche' + (lowPrec ? ' e/o < 10 mm in tutte le precordiali' : '') + '.',
-          'Cause: versamento pericardico, obesità, BPCO/enfisema, amiloidosi, mixedema, edema anasarcatico.'], 'AHA/ACCF/HRS 2009');
+          'Cause: versamento pericardico, obesità, BPCO/enfisema, amiloidosi, mixedema, edema anasarcatico.'].concat((d.contesto || {}).postCCH ? ['Post-cardiochirurgia: confrontare con l\'ECG preoperatorio — una riduzione NUOVA dei voltaggi orienta verso versamento pericardico (anche localizzato, con tamponamento regionale), versamento pleurico, pneumotorace o edema; valutare ecocardiogramma, drenaggi ed emodinamica (PVC, PA, diuresi, lattati).'] : []), 'AHA/ACCF/HRS 2009; ESC 2025 Miocarditi e Pericarditi',
+        (d.contesto || {}).postCCH ? 'Se nuovi rispetto al preoperatorio: ecocardiogramma e valutazione emodinamica.' : undefined);
       if (p.alternanza && m.fc && m.fc > 100) {
         F.add(CAT.CAMERE, 'tamponamento', 'Sospetto tamponamento cardiaco', LIV.CRIT,
           ['Triade: bassi voltaggi + alternanza elettrica + tachicardia sinusale.'],

@@ -420,7 +420,10 @@
       if (st <= lo || pr - pk < 15 || pr - pk > 90) { pr = pk + 50; dur = null; }
       ps.push({ amp: pv, pr, dur, pk });
     });
-    const valid = ps.filter(Boolean);
+    let valid = ps.filter(Boolean);
+    // 1.3.4: un singolo battito con picco anomalo (coda della T, rumore) non deve annullare il riconoscimento
+    // delle P: si tengono le P in posizione coerente (± 40 ms dalla mediana del picco)
+    if (valid.length >= 3) { const mk = median(valid.map(p => p.pk)); const coh = valid.filter(p => Math.abs(p.pk - mk) <= 40); if (coh.length >= Math.max(2, ps.length * 0.7)) valid = coh; }
     const prs = valid.map(p => p.pr), pks = valid.map(p => p.pk);
     // coerenza: P presenti in ≥ 70% dei battiti e in posizione costante rispetto al QRS
     const consistent = valid.length >= Math.max(2, ps.length * 0.7) && prs.length && ((Math.max.apply(null, prs) - Math.min.apply(null, prs)) <= 60 || (Math.max.apply(null, pks) - Math.min.apply(null, pks)) <= 50);
