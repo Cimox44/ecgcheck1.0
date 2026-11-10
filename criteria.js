@@ -8,7 +8,7 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.3.4',
+    version: '1.3.5',
     criteriaVersion: '2026.11.5',
     lastReview: '2026-11-10',
     nextReview: '2026-11-16',
@@ -131,6 +131,9 @@
     if (!pp && m.ppStats) pp = m.ppStats.media;
     m.pp = pp;
     m.fcAtriale = n(r.fcAtriale) || (pp ? 60000 / pp : null);
+    // 1.3.4: PP < 170 ms (FC atriale > 350/min) non è fisiologico nemmeno nel flutter: marker P errati
+    // (es. inizio e fine della STESSA P invece di P consecutive) → valore scartato e segnalato
+    if ((pp && pp < 170) || (m.fcAtriale && m.fcAtriale > 350)) { m.ppErrato = { pp, fa: m.fcAtriale }; m.pp = null; m.fcAtriale = null; m.ppVar = null; }
 
     m.p = n(iv.p); m.pr = n(iv.pr); m.qrs = n(iv.qrs); m.qt = n(iv.qt);
 
@@ -180,7 +183,7 @@
       m.rrVar = s.max - s.min;
       m.regolaritaAuto = (s.max - s.min) > Math.max(120, 0.15 * s.media) ? 'irregolare' : 'regolare';
     }
-    if (m.ppStats && ppList.length >= 3) m.ppVar = m.ppStats.max - m.ppStats.min;
+    if (m.ppStats && ppList.length >= 3 && !m.ppErrato) m.ppVar = m.ppStats.max - m.ppStats.min;
 
     // coerenza: con conduzione 1:1 la frequenza atriale deve coincidere con quella ventricolare
     if (m.fcAtriale && m.fc && r.rapportoPQRS === '1:1' && Math.abs(m.fcAtriale - m.fc) > 0.25 * m.fc) m.ppIncoerente = true;
@@ -218,6 +221,11 @@
           m.qtc ? 'QTc (Framingham) ' + r0(m.qtc) + ' ms.' : 'Valuta il QT dei battiti sinusali.'],
         'ESC 2022 VA', 'Magnesio solfato EV, correzione K+ e Mg2+, sospendere farmaci che allungano il QT; defibrillazione se instabile.');
       return;
+    }
+    if (m.ppErrato) {
+      F.add(CAT.QUALITA, 'pp-errato', 'Intervallo PP non plausibile (scartato)', LIV.MOD,
+        [(m.ppErrato.pp ? 'PP ' + r0(m.ppErrato.pp) + ' ms' : 'Frequenza atriale inserita') + (m.ppErrato.fa ? ' (FC atriale ' + r0(m.ppErrato.fa) + '/min)' : '') + ': sotto 170 ms (oltre 350/min) non è fisiologico, nemmeno nel flutter.',
+          'Probabile marcatura dell\'inizio e della fine della stessa P: il PP si misura tra l\'inizio di due onde P CONSECUTIVE (una per battito). Correggi nella scheda Ritmo o rifai «Marca P».'], '');
     }
     if (hr === null) {
       F.add(CAT.QUALITA, 'no-fc', 'Frequenza cardiaca non disponibile', LIV.INFO,
@@ -708,7 +716,10 @@
         const det = ['Criteri positivi: ' + crit.join('; ') + '.'];
         if (eta !== null && eta < 35) det.push('Età < 35 anni: i criteri di voltaggio hanno bassa specificità.');
         if (strain) det.push('Pattern "strain"' + (strainLeads.length ? ' in ' + strainLeads.join(', ') : '') + ': ST discendente con T negativa asimmetrica nelle derivazioni a R dominante (alterazioni secondarie della ripolarizzazione).');
-        F.add(CAT.CAMERE, 'ivs', strain ? 'Ipertrofia ventricolare sinistra con alterazioni della ripolarizzazione ("strain")' : 'Ipertrofia ventricolare sinistra (criteri ECG)', LIV.MOD, det.concat(strain ? ['Lo strain si associa a maggiore massa ventricolare e a prognosi peggiore; ST e T sono discordanti al QRS (secondari).'] : []),
+        // 1.3.5: con ampiezze lette dalla foto e non ancora verificate i criteri di voltaggio restano "da verificare"
+        // (segnalazione: falsa IVS «Sokolow > 35 mm» su un tracciato a bassi voltaggi)
+        if (d.fotoDaVerificare) det.unshift('DA VERIFICARE: ampiezze lette automaticamente dalla foto. Prima di accettare il reperto misura S in V1/V3 e R in V5/V6/aVL con lo strumento «Onda R/S» (o correggile nella scheda Derivazioni) e conferma le misure.');
+        F.add(CAT.CAMERE, 'ivs', (strain ? 'Ipertrofia ventricolare sinistra con alterazioni della ripolarizzazione ("strain")' : 'Ipertrofia ventricolare sinistra (criteri ECG)') + (d.fotoDaVerificare ? ' – da verificare' : ''), d.fotoDaVerificare ? LIV.INFO : LIV.MOD, det.concat(strain ? ['Lo strain si associa a maggiore massa ventricolare e a prognosi peggiore; ST e T sono discordanti al QRS (secondari).'] : []),
           'Hancock EW et al. AHA/ACCF/HRS 2009 (parte V); Peguero-Lo Presti JACC 2017', 'Confermare con ecocardiogramma; l\'IVS può simulare/mascherare ischemia (ST secondario): confrontare con ECG precedenti.');
       } else if (strain && strainLeads.length) {
         ctx.strainNoVolt = true;

@@ -990,7 +990,9 @@
       let useRR = RR.length >= 2 ? clean(RR) : clean(leadRR);
       if (useRR.length < 2) useRR = RR.length >= 2 ? RR : leadRR;
       if ((RR.length >= 2 ? RR : leadRR).length - useRR.length > 0) warnings.push('Alcuni battiti non sono stati riconosciuti con certezza: verifica FC e regolarità sul tracciato.');
-      const m = rrMed || useRR.reduce((a, b) => a + b, 0) / useRR.length;
+      // 1.3.4: con ≥ 3 RR della riga del ritmo si usa la loro mediana (prima: mediana di tutte le derivazioni →
+      // RR medio fuori dall'intervallo min–max mostrato, es. 965 ms con min 934 – max 944)
+      const m = useRR.length >= 3 ? median(useRR) : (rrMed || useRR.reduce((a, b) => a + b, 0) / useRR.length);
       const pr = pInfo && pInfo.pPresenti ? pInfo.pr : null;
       rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pr, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
     }
