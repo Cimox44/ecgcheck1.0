@@ -630,16 +630,21 @@
   function selectRows(rows, pxmm, nWanted) {
     if (rows.length < 2) return rows;
     let cand = rows;
-    const withP = rows.filter(r => r.pulseL || r.pulseRU);
+    // 1.3.3: vale la disposizione della maggioranza (impulso a inizio riga OPPURE a fine riga): un falso
+    // impulso "a fine riga" su una scritta del piè di pagina non deve promuovere quella riga
+    const nL = rows.filter(r => r.pulseL).length, nRU = rows.filter(r => r.pulseRU).length;
+    const hasP = r => nL >= nRU ? !!r.pulseL : !!r.pulseRU;
+    const withP = rows.filter(hasP);
     if (withP.length >= 3 && withP.length >= rows.length * 0.4) {
       // spaziatura tipica tra righe con impulso
       const ys = withP.map(r => r.y).sort((a, b) => a - b);
       const d = []; for (let i = 1; i < ys.length; i++) d.push(ys[i] - ys[i - 1]);
       // 1.3.1: passo = distanza minima plausibile (le righe senza impulso rilevato creano "salti" doppi)
       const dd9 = d.filter(v => v > pxmm * 9);
-      const step = dd9.length ? Math.min.apply(null, dd9) : median(d);
+      const mn9 = dd9.length ? Math.min.apply(null, dd9) : null;
+      const step = mn9 ? median(dd9.filter(v => v <= mn9 * 1.5)) : median(d);
       cand = rows.filter(r => {
-        if (r.pulseL || r.pulseRU) return true;
+        if (hasP(r)) return true;
         // riga piatta senza impulso (bordo del foglio su fondo scuro, linea di stampa): escursione < 1 mm
         const ys = r.pts.map(p => p[1]);
         if (ys.length && pctl(ys, 0.98) - pctl(ys, 0.02) < pxmm * 1.5) return false;
@@ -663,7 +668,7 @@
     if (nWanted && out.length > nWanted) return out.slice().sort((a, b) => score(b) - score(a)).slice(0, nWanted).sort((a, b) => a.y - b.y);
     return out;
     // escursione della traccia: una riga piatta (bordo del foglio, linea della griglia) perde contro una vera
-    function score(r) { const ys = r.pts.map(p => p[1]); const ex = ys.length ? (pctl(ys, 0.98) - pctl(ys, 0.02)) / pxmm : 0; return (r.pulseL || r.pulseRU ? 1 : 0) + r.ext.cov + (r.ext.x1 - r.ext.x0) / (pxmm * 250) + Math.min(1, ex / 5); }
+    function score(r) { const ys = r.pts.map(p => p[1]); const ex = ys.length ? (pctl(ys, 0.98) - pctl(ys, 0.02)) / pxmm : 0; return (hasP(r) ? 1 : 0) + r.ext.cov + (r.ext.x1 - r.ext.x0) / (pxmm * 250) + Math.min(1, ex / 5); }
   }
 
   /* =====================================================================
@@ -952,6 +957,10 @@
           if (L.R) overlay.push({ t: 'apex', lead: nm, k: 'r', x: L.toX(kB.rI) * pxmm, y: yPx(rawR != null ? rawR : L.sig[kB.rI]), bx, by: yPx(kB.base), lim: L.rLim });
           if (L.S) overlay.push({ t: 'apex', lead: nm, k: 's', x: L.toX(sI) * pxmm, y: yPx(L.sig[sI]), bx, by: yPx(kB.base), lim: L.sLim });
         }
+        // 1.3.3: pochi battiti analizzabili rispetto a quelli attesi (FC dalle derivazioni vicine) → misure
+        // della derivazione non affidabili: niente valori proposti (evita ST/R fittizi da tracce intrecciate)
+        L.durS = (b - a) / pxmm / speed;
+        if (L.unrel) limLeads.push(nm + ' (battiti non riconosciuti)');
         if (L.rLim || L.sLim || L.stLim) limLeads.push(nm + (L.rLim ? ' (R)' : '') + (L.sLim ? ' (S)' : '') + (L.stLim ? ' (ST non misurabile)' : ''));
       });
     });
@@ -985,7 +994,22 @@
       const pr = pInfo && pInfo.pPresenti ? pInfo.pr : null;
       rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pr, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
     }
-    const qrsAll = Object.values(leads).map(l => l.qrs).filter(v => v);
+    if (rrMed) Object.keys(leads).forEach(k => {
+      const L = leads[k]; const exp = (L.durS || 0) * 1000 / rrMed;
+      const good = L.beats.filter(bt => bt.complete).length;
+      if (exp >= 3 && good < Math.max(2, exp * 0.45)) {
+        L.unrel = true; L.st = L.st60 = L.T = L.R = L.S = L.Q = null; L.stLim = L.rLim = L.sLim = true;
+        warnings.push('Derivazione ' + k + ': riconosciuti solo ' + good + ' battiti su ~' + Math.round(exp) + ' (tracce intrecciate o disturbate): ampiezze e ST non proposti, misurali con gli strumenti «Onda» e «ST».');
+      }
+    });
+    // ampiezze molto diverse da battito a battito (tracce intrecciate con la riga vicina): valore da verificare
+    Object.keys(leads).forEach(k => {
+      const L = leads[k]; if (L.unrel) return; const bb = L.beats.filter(bt => bt.complete); if (bb.length < 3) return;
+      const sp = q => { const v = bb.map(bt => bt[q]); const md = median(v); return (Math.max.apply(null, v) - Math.min.apply(null, v)) > Math.max(2.5, 0.5 * md); };
+      if (sp('R')) { L.rLim = true; L.rVar = true; } if (sp('S')) { L.sLim = true; L.sVar = true; }
+      if (L.rVar || L.sVar) warnings.push('Derivazione ' + k + ': ' + (L.rVar ? 'R' : '') + (L.rVar && L.sVar ? ' e ' : '') + (L.sVar ? 'S' : '') + ' molto diverse da battito a battito: valore incerto, verificalo sul tracciato.');
+    });
+    const qrsAll = Object.values(leads).filter(l => !l.unrel).map(l => l.qrs).filter(v => v);
     const qtT = Object.keys(leads).filter(k => leads[k].qt && leads[k].T !== null && Math.abs(leads[k].T) >= 1.5).map(k => leads[k].qt);
     const qtAll = qtT.length >= 3 ? qtT : Object.values(leads).map(l => l.qt).filter(v => v);
     const glob = { qrs: qrsAll.length ? S.pct(qrsAll, 0.75) : null, qt: qtAll.length ? median(qtAll) : null, pr: rhythm ? rhythm.pr : null, p: rhythm ? rhythm.pDur : null };

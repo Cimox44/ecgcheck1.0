@@ -8,8 +8,8 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.3.2',
-    criteriaVersion: '2026.11.4',
+    version: '1.3.3',
+    criteriaVersion: '2026.11.5',
     lastReview: '2026-11-10',
     nextReview: '2026-11-16',
     riferimenti: [
@@ -1090,7 +1090,9 @@
         const contro = [];
         if (reciproci.length) contro.push('sottoslivellamenti reciproci in ' + reciproci.join(', '));
         if (stv.III !== null && stv.II !== null && stv.III > stv.II && stv.III >= 0.5) contro.push('STE III > II');
-        if (stv.aVL !== null && stv.aVL < 0) contro.push('STD in aVL');
+        // 1.3.3: STD in aVL ≥ 0,5 mm (valori minori sono nel rumore di misura, soprattutto da foto)
+        if (stv.aVL !== null && stv.aVL <= -0.5) contro.push('STD in aVL');
+        else if (stv.aVL !== null && stv.aVL < 0 && pericSegni.length) pericSegni.push('STD minimo in aVL (' + f1(stv.aVL) + ' mm): verificalo sul tracciato, se reale favorisce l\'IMA inferiore');
         if (p.stConvesso) contro.push('ST convesso');
         if (p.qPatologiche) contro.push('onde Q');
         if (p.tIperAnt || p.tIperInf || p.tIperLat) contro.push('T iperacute');

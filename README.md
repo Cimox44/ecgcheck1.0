@@ -1,4 +1,4 @@
-# ECGcheck 1.3.2 — Analisi ECG assistita (PWA)
+# ECGcheck 1.3.3 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -90,6 +90,14 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.3.3 (10/11/2026) — righe e derivazioni
+
+| Problema segnalato | Correzione |
+|---|---|
+| Foto ELI 280 con foglio coperto in alto: derivazioni sulle righe sbagliate (falsa FA, falsa IVD, falso STD reciproco, falso OMI) | Righe scelte con la disposizione dell'impulso della maggioranza e passo robusto; riga di testo a piè di pagina scartata |
+| Precordiali alte e intrecciate: ST/R fittizi | Derivazioni con pochi battiti riconosciuti → valori non proposti; R/S variabili segnalate |
+| DD pericardite / OMI poco chiara | PR sottoslivellato misurato rispetto al TP e proposto nei Pattern; ST anche rispetto al TP; STD in aVL «contro» la pericardite solo se ≥ 0,5 mm (criteri 2026.11.5) |
 
 ## Aggiornamento 1.3.2 (10/11/2026) — orientamento, ritmo, punto J
 

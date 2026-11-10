@@ -340,7 +340,11 @@
       }
       if (best !== 0) { tEnd = kk + (base - s[kk]) / best; if (tEnd < tI || tEnd > tEndLim + 40) tEnd = null; }
     }
-    return { on, off, c, rI, base, R, Q, S, st, st60, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
+    // 1.3.3: livello del tratto TP (prima della P) → sottoslivellamento del PR (pericardite) = base PR − TP
+    const rrB = prevC ? (c - prevC) * DT : nextC ? (nextC - c) * DT : 0;
+    const tpL = rrB >= 600 && on - 135 > 0 ? median(s.slice(on - 135, on - 115)) : null;
+    const prDep = tpL !== null ? base - tpL : null;
+    return { on, off, c, rI, base, R, Q, S, st, st60, prDep, stTP: tpL !== null ? s[off] - tpL : null, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
   }
 
   function analyzeLead(seg, ptPerMm, speed, gain, opts) {
@@ -374,7 +378,7 @@
     const toX = idx => x0 + (idx + start) * dxmm; // mm
     return {
       sig, raw, start, x0, dxmm, peaks, beats,
-      R: pick('R'), S: pick('S'), Q: pick('Q'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'),
+      R: pick('R'), S: pick('S'), Q: pick('Q'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'), prDep: pick('prDep'), stTP: pick('stTP'),
       n: use.length,
       marks: use.map(b => ({ j: toX(b.off), on: toX(b.on), r: toX(b.rI), base: b.base, jy: sig[b.off], ry: sig[b.rI] })),
       toX
