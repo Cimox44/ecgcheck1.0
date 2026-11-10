@@ -8,9 +8,9 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.3.1',
-    criteriaVersion: '2026.11.3',
-    lastReview: '2026-11-09',
+    version: '1.3.2',
+    criteriaVersion: '2026.11.4',
+    lastReview: '2026-11-10',
     nextReview: '2026-11-16',
     riferimenti: [
       'Mills NL, Newby LK, Zaman S et al. Fifth Universal Definition of Myocardial Infarction (2026). ESC/ACC/AHA/WHF. Eur Heart J 2026;47:5911-5958 (online 28/08/2026), doi:10.1093/eurheartj/ehag101',
@@ -892,17 +892,24 @@
           ['STE ' + f1(post) + ' mm in V7–V9 (soglia ' + f1(sogP) + ' mm).'], 'IV UDMI 2018; ESC 2023 ACS', 'Attivare la rete STEMI.', 'omi');
       }
 
+      // 1.3.2: per lo STD conta il sottoslivellamento orizzontale/discendente (UDMI): se 60 ms dopo J il tratto
+      // ST è tornato sopra −0,5 mm ed è risalito di ≥ 0,5 mm (STD "ascendente" del punto J) non è considerato ischemico
+      const sD = {}, upSl = [];
+      LEADS.forEach(l => { const v = stv[l], s60 = n(L(d, l).st60); if (v !== null && v <= -0.5 && s60 !== null && s60 > -0.5 && s60 - v >= 0.5 && !p.deWinter) { sD[l] = 0; upSl.push(l); } else sD[l] = v; });
+      if (upSl.length) F.add(CAT.OMI, 'std-asc', 'Sottoslivellamento del punto J con ST ascendente in ' + upSl.join(', '), LIV.INFO,
+        ['A J+60 ms il tratto ST è a ' + upSl.map(l => l + ' ' + f1(n(L(d, l).st60)) + ' mm').join(', ') + ': STD ascendente rapido, non considerato ischemico (la IV/V UDMI richiede STD orizzontale o discendente). Se le T sono alte e simmetriche valuta il pattern di de Winter.'],
+        'IV UDMI 2018; de Winter NEJM 2008');
       // STDmax V1–V4 = OMI posteriore
-      const stdAnt = ['V1', 'V2', 'V3', 'V4'].filter(l => stv[l] !== null && stv[l] < 0);
+      const stdAnt = ['V1', 'V2', 'V3', 'V4'].filter(l => sD[l] !== null && sD[l] < 0);
       if (stdAnt.length) {
-        const maxAnt = Math.min.apply(null, stdAnt.map(l => stv[l]));
-        const lat = ['V5', 'V6'].filter(l => stv[l] !== null).map(l => stv[l]);
+        const maxAnt = Math.min.apply(null, stdAnt.map(l => sD[l]));
+        const lat = ['V5', 'V6'].filter(l => sD[l] !== null).map(l => sD[l]);
         const maxLat = lat.length ? Math.min.apply(null, lat.concat([0])) : 0;
-        const leadMax = stdAnt.find(l => stv[l] === maxAnt);
+        const leadMax = stdAnt.find(l => sD[l] === maxAnt);
         // a parità (< 0,5 mm) si confronta lo STD relativo al QRS (Meyers 2021)
-        const rel = l => { const q = Math.max(amp(d, l, 'r') || 0, amp(d, l, 's') || 0); return q > 0 ? -stv[l] / q : null; };
+        const rel = l => { const q = Math.max(amp(d, l, 'r') || 0, amp(d, l, 's') || 0); return q > 0 ? -sD[l] / q : null; };
         let antWins = maxAnt < maxLat;
-        const latLead = ['V5', 'V6'].filter(l => stv[l] !== null).sort((a, b) => stv[a] - stv[b])[0];
+        const latLead = ['V5', 'V6'].filter(l => sD[l] !== null).sort((a, b) => sD[a] - sD[b])[0];
         if (antWins && latLead && maxLat < 0 && maxLat - maxAnt < 0.5 && rel(leadMax) !== null && rel(latLead) !== null && rel(latLead) >= rel(leadMax)) antWins = false;
         // IVS / strain: STD in una derivazione a R dominante è discordante e atteso (secondario)
         const rDom = (amp(d, leadMax, 'r') || 0) > (amp(d, leadMax, 's') || 0);
@@ -954,7 +961,7 @@
       }
 
       // Ischemia subendocardica diffusa
-      const std1 = LEADS.filter(l => l !== 'aVR' && stv[l] !== null && stv[l] <= -1);
+      const std1 = LEADS.filter(l => l !== 'aVR' && sD[l] !== null && sD[l] <= -1);
       if (std1.length >= 6 && ((stv.aVR !== null && stv.aVR >= 1) || (stv.V1 !== null && stv.V1 >= 1))) {
         F.add(CAT.OMI, 'sei', 'NSTEMI ad alto rischio: ischemia subendocardica diffusa (sospetto TC/trivasale)', LIV.ALTO,
           ['STD ≥ 1 mm in ' + std1.length + ' derivazioni (' + std1.join(', ') + ') con STE in aVR' + (stv.aVR !== null ? ' ' + f1(stv.aVR) + ' mm' : '') + ' e/o V1.',

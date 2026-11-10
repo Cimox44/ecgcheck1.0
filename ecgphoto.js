@@ -268,7 +268,7 @@
       // linea di base locale: traccia nei 10 mm successivi
       const ys = [];
       // 1.3.1: impulso diritto alla FINE della riga (screenshot/visualizzatori): linea di base prima dell'impulso
-      const after = baseBefore ? false : dir > 0;
+      const after = baseBefore === 'after' ? true : baseBefore ? false : dir > 0;
       const bx0 = after ? Math.round(c.j + pxmm * 0.8) : Math.max(0, Math.round(c.x - pxmm * 12)), bx1 = after ? Math.min(W, c.j + pxmm * 12) : Math.round(c.x - pxmm * 0.8);
       for (let x = bx0; x < bx1; x++) {
         let bestY = null;
@@ -289,6 +289,12 @@
       const foot = (xc) => { for (let x = Math.round(xc - pxmm * 1.5); x <= Math.round(xc + pxmm * 1.5); x++) for (let y = Math.round(bl - pxmm * 0.8); y <= Math.round(bl + pxmm * 0.8); y++) if (at(x, y)) return 1; return 0; };
       const sc = foot(c.x) + foot(c.j);
       if (sc < 1) continue;
+      // 1.3.1 (immagini digitali): almeno un lato verticale deve collegare il plateau alla PROPRIA linea di
+      // base; l'impulso della riga vicina visto "da lontano" ha i lati rivolti verso l'altra riga
+      if (GRID !== 'rosa' || baseBefore === 'after') {
+        const leg = xc => { let best = 0; const ya2 = Math.round(Math.min(c.y, bl) + pxmm * 1), yb2 = Math.round(Math.max(c.y, bl) - pxmm * 1); if (yb2 <= ya2) return 1; for (let x = Math.round(xc - pxmm * 0.6); x <= Math.round(xc + pxmm * 0.6); x++) { let n = 0; for (let y = ya2; y <= yb2; y++) if (at(x, y)) n++; best = Math.max(best, n / (yb2 - ya2 + 1)); } return best; };
+        if (Math.max(leg(c.x), leg(c.j)) < 0.6) continue;
+      }
       const hmm = Math.abs(h) / pxmm;
       const score = sc * 0.6 + (hmm >= 7.5 && hmm <= 12.5 ? 1.2 : hmm >= 4 && hmm <= 6 ? 0.6 : hmm >= 17 && hmm <= 22 ? 0.6 : 0);
       if (!best || score > best.score) best = { h: Math.abs(h), len: c.j - c.x + 1, xStart: c.x, xEnd: c.j + pxmm * 0.6, base: bl, ok: true, score };
@@ -693,8 +699,8 @@
 
     // 1) carta
     // 1.3.1: screenshot / immagini piccole → ingrandimento; colore della griglia rilevato automaticamente
-    let upK = 1;
-    if (Math.max(img.width, img.height) < 1500) { upK = Math.min(3, 2200 / Math.max(img.width, img.height)); img = upscale(img, upK); }
+    let upK = opts._upK || 1;
+    if (!opts._flipped && Math.max(img.width, img.height) < 1500) { upK = Math.min(3, 2200 / Math.max(img.width, img.height)); img = upscale(img, upK); }
     GRID = gridHue(img);
     const ch0 = channels(img);
     const pm0 = paperMask(ch0);
@@ -776,16 +782,19 @@
     const analyseRows = (dmask) => {
       const ys = findRows(dmask, outW, outH, pxmm);
       const cc = components(dmask, outW, outH);
-      const pls = ys.map(y => ({ L: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), 1), R: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, -1), RU: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, 1, true) }));
+      const pls = ys.map(y => ({ L: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), 1), R: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, -1), RU: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, 1, true), LI: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), -1, 'after') }));
       // 1.3.1: lo stesso impulso fisico può essere visto come impulso ROVESCIATO della riga sopra e come
       // impulso DIRITTO della riga sotto (o viceversa): vale quello con altezza più vicina a 5/10/20 mm
       const offStd = o => { const hm = o.h / pxmm; return Math.min.apply(null, [5, 10, 20].map(g => Math.abs(hm - g) / g)); };
       for (let i = 0; i + 1 < ys.length; i++) {
         const a = pls[i].R, b = pls[i + 1].RU;
         if (a && b && Math.abs(a.xStart - b.xStart) < pxmm * 2.5) { if (offStd(a) <= offStd(b)) pls[i + 1].RU = null; else pls[i].R = null; }
+        // idem a sinistra: impulso rovesciato della riga sopra (foto capovolta con taratura a fine riga) ≡ impulso diritto della riga sotto
+        const c = pls[i].LI, e = pls[i + 1].L;
+        if (c && e && Math.abs(c.xStart - e.xStart) < pxmm * 2.5) { if (offStd(c) < offStd(e)) pls[i + 1].L = null; else pls[i].LI = null; }
       }
       // impulsi coerenti: altezza e posizione simili tra le righe (scarta falsi plateau)
-      ['L', 'R', 'RU'].forEach(side => {
+      ['L', 'R', 'RU', 'LI'].forEach(side => {
         const v = pls.filter(o => o[side]);
         if (v.length >= 3) {
           const mh = median(v.map(o => o[side].h)), mx = median(v.map(o => o[side].xStart));
@@ -808,7 +817,7 @@
         const xLim = pls[i].RU && !pls[i].L ? Math.round(pls[i].RU.xStart - pxmm * 0.8) : outW;
         for (let yy = ya; yy <= yb; yy++) for (let x = Math.round(xStart); x < xLim; x++) { const k = yy * outW + x; if (dmask[k] && okc.has(cc.lab[k])) sub[k] = 1; }
         const tk = trackRow(sub, outW, outH, y, lim0, lim1, pxmm, xStart, nbU, nbD);
-        return { y, cols: tk.cols, th: tk.th, pulseL: pls[i].L, pulseR: pls[i].R, pulseRU: pls[i].RU, xStart, merged: tk.merged };
+        return { y, cols: tk.cols, th: tk.th, pulseL: pls[i].L, pulseR: pls[i].R, pulseRU: pls[i].RU, pulseLI: pls[i].LI, xStart, merged: tk.merged };
       });
       // 1.3.0 – tracce sovrapposte tra righe adiacenti (6×2: QRS simultanei; R alta della riga sotto che
       // incontra la S profonda della riga sopra): nelle colonne in cui le due righe rivendicano gli stessi
@@ -834,18 +843,29 @@
       return selectRows(rows, pxmm, prefRows);
     };
     let rows = analyseRows(dm);
-    let ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU }));
-    const pulsesL = ps.filter(o => o.L).length, pulsesR = ps.filter(o => o.R).length, pulsesRU = ps.filter(o => o.RU).length;
+    let ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU, LI: r.pulseLI }));
+    const pulsesL = ps.filter(o => o.L).length, pulsesR = ps.filter(o => o.R).length, pulsesRU = ps.filter(o => o.RU).length, pulsesLI = ps.filter(o => o.LI).length;
     let flip = false;
-    // capovolto di 180° solo se gli impulsi a destra sono ROVESCIATI; impulsi diritti a destra = formato
-    // con taratura a fine riga (es. visualizzatori/screenshot), non una foto capovolta
-    if (pulsesR > pulsesL && pulsesR > pulsesRU) {
+    // capovolto di 180° se gli impulsi sono ROVESCIATI: a destra (taratura a inizio riga) o a sinistra
+    // (taratura a fine riga, es. screenshot di visualizzatori ruotati); impulsi diritti = orientamento corretto
+    const upEv = pulsesL + pulsesRU, downEv = pulsesR + pulsesLI;
+    const wantFlip = opts.flip === true || (opts.flip !== false && downEv > upEv);
+    // 1.3.1: immagini digitali o taratura a fine riga: il capovolgimento si fa ruotando di 180° l'immagine di
+    // partenza e ripetendo l'intera lettura (più robusto del ribaltamento della sola finestra raddrizzata)
+    if (wantFlip && !opts._flipped && (GRID !== 'rosa' || pulsesLI > pulsesR)) {
+      const d = img.data, n = img.width * img.height, o = new Uint8ClampedArray(d.length);
+      for (let i = 0; i < n; i++) { const j = (n - 1 - i) * 4, k = i * 4; o[k] = d[j]; o[k + 1] = d[j + 1]; o[k + 2] = d[j + 2]; o[k + 3] = d[j + 3]; }
+      const res2 = analyzePhoto({ width: img.width, height: img.height, data: o }, Object.assign({}, opts, { flip: false, _flipped: true, _upK: upK }));
+      if (res2.ok) res2.rotation = ((res2.rotation || 0) + 180) % 360;
+      return res2;
+    }
+    if (wantFlip && !opts._flipped) {
       flip = true;
       map = makeAffine(img.width, img.height, quarter, tr, pr, sy, u0, v0, true, outW, outH);
       rect = render(img, map, outW, outH);
       ch = channels(rect); pm = paperMask(ch); dk = darkThreshold(ch, pm); dm = traceMask(ch, pm, dk, Math.round(pxmmX * 2.5), pxmmX);
       rows = analyseRows(dm);
-      ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU }));
+      ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU, LI: r.pulseLI }));
     }
     const pulseRight = !flip && ps.filter(o => o.RU).length > ps.filter(o => o.L).length;
     if (!rows.length) return fail('Tracciato non trovato nella foto.');

@@ -284,13 +284,18 @@
       if (big < maxSl * 0.35) { on = k - 3; }
       break;
     }
+    // tratto davvero fermo: nei 20 ms successivi il segnale non varia più di ~0,4 mm (esclude il nadir della S)
+    const flat = (k, dir) => { let mx = 0; for (let q = 1; q <= 10; q++) { const j = k + dir * q; if (j < 0 || j >= n) break; mx = Math.max(mx, Math.abs(s[j] - s[k])); } return mx <= Math.max(0.4, 0.05 * (pMax - pMin)); };
     for (let k = c + 4; k < off - 6; k++) {
-      let still = nearB(k); for (let q = k; q < k + 6; q++) if (Math.abs(slope(s, q)) > thr * 1.5) { still = false; break; }
+      let still = nearB(k) && flat(k, 1); for (let q = k; q < k + 6; q++) if (Math.abs(slope(s, q)) > thr * 1.5) { still = false; break; }
       if (!still) continue;
       let big = 0; for (let q = k + 6; q < Math.min(n - 1, k + 21); q++) big = Math.max(big, Math.abs(slope(s, q)));
       if (big < maxSl * 0.35) { off = k + 3; }
       break;
     }
+    // 1.3.1: il punto J non deve cadere sulla branca ripida della S/R (immagini a bassa risoluzione):
+    // si avanza finché la pendenza scende sotto il 12% della massima (al massimo 40 ms)
+    { const off0 = off; while (off < n - 2 && off - off0 < 20 && Math.abs(slope(s, off)) > maxSl * 0.12) off++; }
     const blS = s.slice(Math.max(0, on - 20), Math.max(1, on - 4));
     const base = median(blS);
     // onda R = massimo locale seguito da una discesa >= 0,3 mm (esclude il punto J sopraslivellato)
@@ -396,20 +401,29 @@
     beats.forEach(b => {
       const lo = Math.max(0, b.on - 140), hi = b.on - 30;
       if (lo >= hi) return;
+      // 1.3.1: linea di base anche dal tratto TP (prima della P): la base "PR" subito prima del QRS può
+      // cadere sulla coda della P e ridurne l'ampiezza (P piccole negli screenshot a bassa risoluzione)
+      const tp = b.on - 125 > 5 ? median(sig.slice(Math.max(0, b.on - 135), b.on - 115)) : null;
+      const base = tp !== null ? Math.min(b.base, tp) : b.base;
       let pi = lo, pv = -Infinity;
-      for (let k = lo; k <= hi; k++) { const v = sig[k] - b.base; if (v > pv) { pv = v; pi = k; } }
-      if (pv < 0.4) { ps.push(null); return; }
-      let st = pi; while (st > lo && sig[st] - b.base > pv * 0.15) st--;
-      let en = pi; while (en < b.on && sig[en] - b.base > pv * 0.15) en++;
-      ps.push({ amp: pv, pr: (b.on - st) * DT, dur: (en - st) * DT });
+      for (let k = lo; k <= hi; k++) { const v = sig[k] - base; if (v > pv) { pv = v; pi = k; } }
+      if (pv < 0.4 && !(tp !== null && pv >= 0.3)) { ps.push(null); return; }
+      let st = pi; while (st > lo && sig[st] - base > pv * 0.2) st--;
+      let en = pi; while (en < b.on && sig[en] - base > pv * 0.2) en++;
+      // se l'inizio della P non è definibile (linea di base rumorosa, immagini a bassa risoluzione) il PR si
+      // stima dal picco della P (+ 50 ms, metà della durata tipica)
+      const pk = (b.on - pi) * DT; let pr = (b.on - st) * DT, dur = (en - st) * DT;
+      if (st <= lo || pr - pk < 15 || pr - pk > 90) { pr = pk + 50; dur = null; }
+      ps.push({ amp: pv, pr, dur, pk });
     });
     const valid = ps.filter(Boolean);
-    const prs = valid.map(p => p.pr);
-    const consistent = valid.length >= Math.max(2, ps.length * 0.7) && prs.length && (Math.max.apply(null, prs) - Math.min.apply(null, prs)) <= 60;
+    const prs = valid.map(p => p.pr), pks = valid.map(p => p.pk);
+    // coerenza: P presenti in ≥ 70% dei battiti e in posizione costante rispetto al QRS
+    const consistent = valid.length >= Math.max(2, ps.length * 0.7) && prs.length && ((Math.max.apply(null, prs) - Math.min.apply(null, prs)) <= 60 || (Math.max.apply(null, pks) - Math.min.apply(null, pks)) <= 50);
     return {
       rr, rrMean: mean(rr), hr: 60000 / mean(rr), rrVar: Math.max.apply(null, rr) - Math.min.apply(null, rr),
       pPresenti: consistent, pAmp: valid.length ? median(valid.map(p => p.amp)) : null,
-      pr: consistent ? median(prs) : null, pDur: consistent ? median(valid.map(p => p.dur)) : null
+      pr: consistent ? median(prs) : null, pDur: consistent && valid.some(p => p.dur) ? median(valid.map(p => p.dur).filter(v => v)) : null
     };
   }
 
