@@ -59,16 +59,51 @@
   /* =====================================================================
      1. CANALI E CARTA
      ===================================================================== */
+  // 1.3.1: canale della griglia secondo il colore: rosa/rossa (carta), blu/azzurra, verde o grigia
+  // (screenshot di visualizzatori e app: PMcardio, cartelle cliniche, PDF esportati come immagine)
+  let GRID = 'rosa';
+  function gridHue(img) {
+    const { width: W, height: H, data } = img; const st = Math.max(1, Math.floor(Math.sqrt(W * H / 200000)));
+    let rg = 0, br = 0, gr = 0, n = 0;
+    for (let y = 0; y < H; y += st) for (let x = 0; x < W; x += st) {
+      const j = (y * W + x) * 4, r = data[j], g = data[j + 1], b = data[j + 2], l = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (l < 140 || l > 252) continue;
+      rg += r - g; br += b - r; gr += g - (r + b) / 2; n++;
+    }
+    if (!n) return 'rosa';
+    rg /= n; br /= n; gr /= n;
+    if (rg >= 4 && rg >= br && rg >= gr) return 'rosa';
+    if (br >= 4 && br >= gr) return 'blu';
+    if (gr >= 4) return 'verde';
+    return rg > 1.5 ? 'rosa' : 'grigio';
+  }
   function channels(img) {
     const { width: W, height: H, data } = img;
-    const n = W * H, lum = new Float32Array(n), rg = new Float32Array(n), sat = new Uint8Array(n);
+    const n = W * H, lum = new Float32Array(n), rg = new Float32Array(n), sat = new Uint8Array(n), mn = new Float32Array(n);
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       const r = data[j], g = data[j + 1], b = data[j + 2];
-      lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
-      rg[i] = r - g;
+      const l = 0.299 * r + 0.587 * g + 0.114 * b;
+      lum[i] = l; mn[i] = Math.min(r, g, b);
+      // "rg" = intensità del colore della griglia (storicamente R−G per la carta rosa)
+      rg[i] = GRID === 'rosa' ? r - g : GRID === 'blu' ? (b - r) * 1.6 : GRID === 'verde' ? (g - (r + b) / 2) * 1.6 : (l > 150 ? Math.max(0, 250 - l) * 0.8 : 0);
       sat[i] = Math.max(r, g, b) - Math.min(r, g, b);
     }
-    return { W, H, lum, rg, sat };
+    return { W, H, lum, rg, sat, mn };
+  }
+  // ingrandimento bilineare delle immagini piccole (screenshot): la traccia sottile e la griglia a
+  // 3–4 px/mm diventano inseguibili; le misure in mm/ms non dipendono dalla scala
+  function upscale(img, k) {
+    const { width: W, height: H, data } = img; const w2 = Math.round(W * k), h2 = Math.round(H * k);
+    const out = new Uint8ClampedArray(w2 * h2 * 4);
+    for (let y = 0; y < h2; y++) {
+      const sy = Math.min(H - 1.001, Math.max(0, (y + 0.5) / k - 0.5)), y0 = sy | 0, fy = sy - y0;
+      for (let x = 0; x < w2; x++) {
+        const sx = Math.min(W - 1.001, Math.max(0, (x + 0.5) / k - 0.5)), x0 = sx | 0, fx = sx - x0;
+        const i00 = (y0 * W + x0) * 4, i10 = i00 + 4, i01 = i00 + W * 4, i11 = i01 + 4, o = (y * w2 + x) * 4;
+        for (let c = 0; c < 4; c++) out[o + c] = (data[i00 + c] * (1 - fx) + data[i10 + c] * fx) * (1 - fy) + (data[i01 + c] * (1 - fx) + data[i11 + c] * fx) * fy;
+      }
+    }
+    return { width: w2, height: h2, data: out };
   }
 
   function paperMask(ch) {
@@ -92,6 +127,9 @@
     thr = Math.max(4, (thr + 0.5) / 2);
     let mask = new Uint8Array(bw * bh);
     for (let i = 0; i < mask.length; i++) mask[i] = feat[i] > thr && ml[i] > 90 ? 1 : 0;
+    // 1.3.1: screenshot (griglia non rosa): la carta è la zona chiara, con o senza linee di griglia visibili
+    // (solo se la griglia è troppo chiara per delimitare il foglio)
+    if (GRID !== 'rosa') { let c = 0; for (let i = 0; i < mask.length; i++) c += mask[i]; if (c < mask.length * 0.3) for (let i = 0; i < mask.length; i++) mask[i] = ml[i] > 150 ? 1 : 0; }
     // chiusura morfologica (riempie i buchi lasciati dalla traccia e dal testo)
     const dil = (m, r) => { const o = new Uint8Array(m.length); for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) { if (!m[y * bw + x]) continue; for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const yy = y + dy, xx = x + dx; if (yy >= 0 && yy < bh && xx >= 0 && xx < bw) o[yy * bw + xx] = 1; } } return o; };
     const ero = (m, r) => { const inv = new Uint8Array(m.length); for (let i = 0; i < m.length; i++) inv[i] = m[i] ? 0 : 1; const d = dil(inv, r); for (let i = 0; i < m.length; i++) d[i] = d[i] ? 0 : 1; return d; };
@@ -107,6 +145,11 @@
     const pm = new Uint8Array(bw * bh); let x0 = bw, x1 = 0, y0 = bh, y1 = 0;
     const lums = [];
     for (let i = 0; i < pm.length; i++) if (lab[i] === bestLab && bestLab) { pm[i] = 1; const x = i % bw, y = (i / bw) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; lums.push(ml[i]); }
+    // 1.3.1: griglia chiara non rosa (screenshot): i blocchi chiari senza linee di griglia visibili dentro il
+    // rettangolo del foglio fanno parte della carta (altrimenti la traccia resta "a buchi")
+    if (GRID !== 'rosa' && bestLab) {
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const k = y * bw + x; if (!pm[k] && ml[k] > 120) { pm[k] = 1; bestN++; } }
+    }
     return { B, bw, bh, mask: pm, frac: bestN / (bw * bh), bbox: { x0: x0 * B, y0: y0 * B, x1: (x1 + 1) * B, y1: (y1 + 1) * B }, paperLum: median(lums) || 170 };
   }
   const inPaper = (pm, x, y) => { const bx = (x / pm.B) | 0, by = (y / pm.B) | 0; return bx >= 0 && by >= 0 && bx < pm.bw && by < pm.bh && pm.mask[by * pm.bw + bx] === 1; };
@@ -136,7 +179,10 @@
   // 3) isteresi limitata: pixel con c alto a ≤ 2 px da pixel forti (tratti sottili del QRS)
   // 4) rimozione dei puntini isolati (incroci della griglia)
   function traceMask(ch, pm, dk, r, pxmm, noGrid) {
-    const { W, H, lum } = ch;
+    const { W, H } = ch;
+    // griglia non rosa: canale minimo RGB (traccia nera e segni colorati come l'impulso blu risaltano,
+    // la griglia chiara no)
+    const lum = GRID !== 'rosa' ? ch.mn : ch.lum;
     const bl = blur2D(lum, W, H, r);
     const c = new Float32Array(W * H);
     for (let i = 0; i < W * H; i++) c[i] = bl[i] - lum[i];
@@ -147,8 +193,14 @@
     dk.levelT = lv3;
     const strong = lv3 * 0.5, weak = lv1 * 0.45;
     const m = new Uint8Array(W * H); const st = [];
+    // 1.3.1: griglia non rosa (screenshot, visualizzatori): traccia sottile e antialiasata, griglia chiara →
+    // soglia sul contrasto riferita alla distanza fondo–nero, escludendo scritte e segni colorati (blu)
+    const digital = GRID !== 'rosa';
+    const span = Math.max(40, (dk.p50 || 235) - (dk.p1 || 60));
+    const dS = span * 0.4, dW = span * 0.26;
     for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
       const i = y * W + x; if (!inPaper(pm, x, y)) continue;
+      if (digital) { if (c[i] > dS) { m[i] = 2; st.push(i); } else if (c[i] > dW) m[i] = 1; continue; }
       if (c3[i] > strong && c[i] > weak * 0.8) { m[i] = 2; st.push(i); } else if (c[i] > weak) m[i] = 1;
     }
     const out = new Uint8Array(W * H);
@@ -158,6 +210,16 @@
       for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
         const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
         const k = yy * W + xx; if (m[k] === 1) out[k] = 1;
+      }
+    }
+    if (digital) {
+      // apici sottili e chiari delle onde (antialiasing): crescita limitata (≤ 0,8 mm) su pixel deboli
+      const dT = span * 0.15; let front = []; for (let i = 0; i < W * H; i++) if (out[i]) front.push(i);
+      const steps = Math.max(3, Math.round((pxmm || 7) * 0.8));
+      for (let it = 0; it < steps && front.length; it++) {
+        const nf = [];
+        for (const i of front) { const x = i % W, y = (i / W) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 1 || yy < 1 || xx >= W - 1 || yy >= H - 1) continue; const k = yy * W + xx; if (!out[k] && c[k] > dT && inPaper(pm, xx, yy)) { out[k] = 1; nf.push(k); } } }
+        front = nf;
       }
     }
     // puntini isolati
@@ -177,7 +239,7 @@
 
   // impulso di taratura cercato nella maschera: plateau orizzontale (3–9 mm) a 4–22 mm dalla base,
   // interno vuoto; l'altezza è misurata rispetto alla linea di base locale subito dopo l'impulso
-  function pulseFromMask(dm, W, H, base, pxmm, xa, xb, dir) {
+  function pulseFromMask(dm, W, H, base, pxmm, xa, xb, dir, baseBefore) {
     const at = (x, y) => x >= 0 && y >= 0 && x < W && y < H && dm[y * W + x] === 1;
     const y0 = base - dir * pxmm * 24, y1 = base - dir * pxmm * 3;
     const ya = Math.max(0, Math.round(Math.min(y0, y1))), yb = Math.min(H - 1, Math.round(Math.max(y0, y1)));
@@ -205,7 +267,9 @@
     for (const c of cands) {
       // linea di base locale: traccia nei 10 mm successivi
       const ys = [];
-      const bx0 = dir > 0 ? Math.round(c.j + pxmm * 0.8) : Math.max(0, Math.round(c.x - pxmm * 12)), bx1 = dir > 0 ? Math.min(W, c.j + pxmm * 12) : Math.round(c.x - pxmm * 0.8);
+      // 1.3.1: impulso diritto alla FINE della riga (screenshot/visualizzatori): linea di base prima dell'impulso
+      const after = baseBefore ? false : dir > 0;
+      const bx0 = after ? Math.round(c.j + pxmm * 0.8) : Math.max(0, Math.round(c.x - pxmm * 12)), bx1 = after ? Math.min(W, c.j + pxmm * 12) : Math.round(c.x - pxmm * 0.8);
       for (let x = bx0; x < bx1; x++) {
         let bestY = null;
         for (let k = 0; k < pxmm * 6; k++) { const yy = Math.round(base + (k % 2 ? 1 : -1) * Math.ceil(k / 2)); if (at(x, yy)) { bestY = yy; break; } }
@@ -335,7 +399,22 @@
     cands.sort((a, b) => b.score - a.score);
     return cands[0] || null;
   }
+  // 1.3.1: affinamento "a pettine" (screenshot/JPEG con griglia poco contrastata): il passo che massimizza
+  // l'autocorrelazione su tutti i multipli di 1 mm entro l'intervallo calcolato
+  function combPeriod(gx, mm) {
+    const ac = gx.ac, n = ac.length - 1;
+    const at = L => { const i = Math.floor(L), f = L - i; return i + 1 <= n ? ac[i] * (1 - f) + ac[i + 1] * f : 0; };
+    let best = mm, bs = -Infinity;
+    for (let f = 0.9; f <= 1.1; f += 0.001) {
+      const m = mm * f, K = Math.floor(n / m); if (K < 3) continue;
+      let sc = 0; for (let k = 1; k <= K; k++) sc += at(k * m) * (k % 5 === 0 ? 2 : 1);
+      sc /= K;
+      if (sc > bs) { bs = sc; best = m; }
+    }
+    return best;
+  }
   function refinePeriod(gx, mm) {
+    if (GRID !== 'rosa') return combPeriod(gx, mm);
     // affina usando il picco a 5 mm (o 10 mm) dell'autocorrelazione
     const near = (L) => { let best = null; gx.mx.forEach(m => { if (Math.abs(m.lag - L) < L * 0.08 && (!best || m.v > best.v)) best = m; }); return best; };
     const p10 = near(10 * mm), p5 = near(5 * mm);
@@ -474,7 +553,9 @@
     // linee verticali isolate (griglia residua) incrociate dalla traccia: la colonna ha una corsa
     // lunga ma le colonne a ±2 px hanno corse brevi alla stessa altezza → si ignora la linea
     const L = r => r ? r[1] - r[0] : 0, C = r => (r[0] + r[1]) / 2;
-    for (let x = 2; x < W - 2; x++) {
+    // (solo carta rosa: negli screenshot la griglia chiara non entra nella maschera e un'onda R stretta
+    // 2–3 px sembrerebbe una linea verticale isolata)
+    for (let x = 2; x < W - 2 && GRID === 'rosa'; x++) {
       const r = cols[x]; if (!r || L(r) < pxmm * 2) continue;
       const a = cols[x - 2] || cols[x - 3], b = cols[x + 2] || cols[x + 3];
       if (!a || !b) continue;
@@ -543,21 +624,24 @@
   function selectRows(rows, pxmm, nWanted) {
     if (rows.length < 2) return rows;
     let cand = rows;
-    const withP = rows.filter(r => r.pulseL);
+    const withP = rows.filter(r => r.pulseL || r.pulseRU);
     if (withP.length >= 3 && withP.length >= rows.length * 0.4) {
       // spaziatura tipica tra righe con impulso
       const ys = withP.map(r => r.y).sort((a, b) => a - b);
       const d = []; for (let i = 1; i < ys.length; i++) d.push(ys[i] - ys[i - 1]);
-      const step = median(d.filter(v => v > pxmm * 9)) || median(d);
+      // 1.3.1: passo = distanza minima plausibile (le righe senza impulso rilevato creano "salti" doppi)
+      const dd9 = d.filter(v => v > pxmm * 9);
+      const step = dd9.length ? Math.min.apply(null, dd9) : median(d);
       cand = rows.filter(r => {
-        if (r.pulseL) return true;
+        if (r.pulseL || r.pulseRU) return true;
         // riga piatta senza impulso (bordo del foglio su fondo scuro, linea di stampa): escursione < 1 mm
         const ys = r.pts.map(p => p[1]);
-        if (ys.length && pctl(ys, 0.98) - pctl(ys, 0.02) < pxmm * 1.0) return false;
+        if (ys.length && pctl(ys, 0.98) - pctl(ys, 0.02) < pxmm * 1.5) return false;
         // riga senza impulso: accettata solo se a un passo (±20%) dalla riga con impulso più vicina
         const w = withP.reduce((b, q) => Math.abs(q.y - r.y) < Math.abs(b.y - r.y) ? q : b);
-        const d = Math.abs(r.y - w.y);
-        return Math.abs(d - step) < step * 0.2;
+        // a un numero intero di passi (anche le righe vicine possono non avere l'impulso riconosciuto)
+        const d = Math.abs(r.y - w.y), k = Math.max(1, Math.round(d / step));
+        return Math.abs(d - k * step) < step * 0.2;
       });
     }
     // righe troppo vicine (< 60% della spaziatura mediana): tiene la più "densa"
@@ -572,7 +656,8 @@
     });
     if (nWanted && out.length > nWanted) return out.slice().sort((a, b) => score(b) - score(a)).slice(0, nWanted).sort((a, b) => a.y - b.y);
     return out;
-    function score(r) { return (r.pulseL ? 1 : 0) + r.ext.cov + (r.ext.x1 - r.ext.x0) / (pxmm * 250); }
+    // escursione della traccia: una riga piatta (bordo del foglio, linea della griglia) perde contro una vera
+    function score(r) { const ys = r.pts.map(p => p[1]); const ex = ys.length ? (pctl(ys, 0.98) - pctl(ys, 0.02)) / pxmm : 0; return (r.pulseL || r.pulseRU ? 1 : 0) + r.ext.cov + (r.ext.x1 - r.ext.x0) / (pxmm * 250) + Math.min(1, ex / 5); }
   }
 
   /* =====================================================================
@@ -607,6 +692,10 @@
     const profKey = opts.profilo && PROFILES[opts.profilo] ? opts.profilo : 'auto';
 
     // 1) carta
+    // 1.3.1: screenshot / immagini piccole → ingrandimento; colore della griglia rilevato automaticamente
+    let upK = 1;
+    if (Math.max(img.width, img.height) < 1500) { upK = Math.min(3, 2200 / Math.max(img.width, img.height)); img = upscale(img, upK); }
+    GRID = gridHue(img);
     const ch0 = channels(img);
     const pm0 = paperMask(ch0);
     if (pm0.frac < 0.08) return fail('Carta millimetrata non riconosciuta: inquadra tutto il foglio ECG con buona luce.');
@@ -687,9 +776,16 @@
     const analyseRows = (dmask) => {
       const ys = findRows(dmask, outW, outH, pxmm);
       const cc = components(dmask, outW, outH);
-      const pls = ys.map(y => ({ L: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), 1), R: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, -1) }));
+      const pls = ys.map(y => ({ L: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), 1), R: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, -1), RU: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, 1, true) }));
+      // 1.3.1: lo stesso impulso fisico può essere visto come impulso ROVESCIATO della riga sopra e come
+      // impulso DIRITTO della riga sotto (o viceversa): vale quello con altezza più vicina a 5/10/20 mm
+      const offStd = o => { const hm = o.h / pxmm; return Math.min.apply(null, [5, 10, 20].map(g => Math.abs(hm - g) / g)); };
+      for (let i = 0; i + 1 < ys.length; i++) {
+        const a = pls[i].R, b = pls[i + 1].RU;
+        if (a && b && Math.abs(a.xStart - b.xStart) < pxmm * 2.5) { if (offStd(a) <= offStd(b)) pls[i + 1].RU = null; else pls[i].R = null; }
+      }
       // impulsi coerenti: altezza e posizione simili tra le righe (scarta falsi plateau)
-      ['L', 'R'].forEach(side => {
+      ['L', 'R', 'RU'].forEach(side => {
         const v = pls.filter(o => o[side]);
         if (v.length >= 3) {
           const mh = median(v.map(o => o[side].h)), mx = median(v.map(o => o[side].xStart));
@@ -708,9 +804,11 @@
         const okc = rowComponents(cc, outW, y, pxmm, xStart);
         const sub = new Uint8Array(outW * outH);
         const ya = Math.max(0, Math.round(lim0)), yb = Math.min(outH - 1, Math.round(lim1));
-        for (let yy = ya; yy <= yb; yy++) for (let x = Math.round(xStart); x < outW; x++) { const k = yy * outW + x; if (dmask[k] && okc.has(cc.lab[k])) sub[k] = 1; }
+        // impulso a destra: la traccia termina prima dell'impulso
+        const xLim = pls[i].RU && !pls[i].L ? Math.round(pls[i].RU.xStart - pxmm * 0.8) : outW;
+        for (let yy = ya; yy <= yb; yy++) for (let x = Math.round(xStart); x < xLim; x++) { const k = yy * outW + x; if (dmask[k] && okc.has(cc.lab[k])) sub[k] = 1; }
         const tk = trackRow(sub, outW, outH, y, lim0, lim1, pxmm, xStart, nbU, nbD);
-        return { y, cols: tk.cols, th: tk.th, pulseL: pls[i].L, pulseR: pls[i].R, xStart, merged: tk.merged };
+        return { y, cols: tk.cols, th: tk.th, pulseL: pls[i].L, pulseR: pls[i].R, pulseRU: pls[i].RU, xStart, merged: tk.merged };
       });
       // 1.3.0 – tracce sovrapposte tra righe adiacenti (6×2: QRS simultanei; R alta della riga sotto che
       // incontra la S profonda della riga sopra): nelle colonne in cui le due righe rivendicano gli stessi
@@ -736,21 +834,24 @@
       return selectRows(rows, pxmm, prefRows);
     };
     let rows = analyseRows(dm);
-    let ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR }));
-    const pulsesL = ps.filter(o => o.L).length, pulsesR = ps.filter(o => o.R).length;
+    let ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU }));
+    const pulsesL = ps.filter(o => o.L).length, pulsesR = ps.filter(o => o.R).length, pulsesRU = ps.filter(o => o.RU).length;
     let flip = false;
-    if (pulsesR > pulsesL) {
+    // capovolto di 180° solo se gli impulsi a destra sono ROVESCIATI; impulsi diritti a destra = formato
+    // con taratura a fine riga (es. visualizzatori/screenshot), non una foto capovolta
+    if (pulsesR > pulsesL && pulsesR > pulsesRU) {
       flip = true;
       map = makeAffine(img.width, img.height, quarter, tr, pr, sy, u0, v0, true, outW, outH);
       rect = render(img, map, outW, outH);
       ch = channels(rect); pm = paperMask(ch); dk = darkThreshold(ch, pm); dm = traceMask(ch, pm, dk, Math.round(pxmmX * 2.5), pxmmX);
       rows = analyseRows(dm);
-      ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR }));
+      ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU }));
     }
+    const pulseRight = !flip && ps.filter(o => o.RU).length > ps.filter(o => o.L).length;
     if (!rows.length) return fail('Tracciato non trovato nella foto.');
 
     // 7) impulsi di taratura → guadagno
-    const pulses = rows.map((r, i) => ({ r, p: ps[i] && ps[i].L }));
+    const pulses = rows.map((r, i) => ({ r, p: ps[i] && (pulseRight ? ps[i].RU : ps[i].L) }));
     const hs = pulses.filter(o => o.p).map(o => o.p.h / pxmm);
     let gain = gainSet, pulseMm = null;
     if (hs.length) {
@@ -771,17 +872,32 @@
     const leads = {}, overlay = [], segs = [], limLeads = [];
     let rhythmPts = null, rhythmName = null;
     // inizio comune delle derivazioni: fine degli impulsi (mediana), altrimenti inizio della traccia
-    const pEnds = pulses.filter(o => o.p).map(o => o.p.xEnd);
+    const pEnds = pulseRight ? [] : pulses.filter(o => o.p).map(o => o.p.xEnd);
     const startX = pEnds.length ? median(pEnds) + pxmm * 1.2 : null;
+    const rEnds = pulseRight ? pulses.filter(o => o.p).map(o => o.p.xStart) : [];
+    const endX = rEnds.length ? median(rEnds) - pxmm * 0.8 : null;
     rows.slice(0, prof.mappa.length).forEach((r, ri) => {
       const pu = pulses[ri] && pulses[ri].p;
-      const xs = pu ? pu.xEnd + pxmm * 1.2 : startX !== null ? startX : Math.max(r.xStart, r.ext.x0) + pxmm * 0.5;
       const names = prof.mappa[ri];
-      const totMm = (names.length === 1 && prof.colonne > 1) ? 10 * speed : 10 * speed; // 10 s per riga
-      const xe = Math.min(r.ext.x1, xs + totMm * pxmm) - pxmm * 0.3;
-      const w = names.length === 1 ? xe - xs : (totMm * pxmm) / names.length;
+      const totMm = 10 * speed; // 10 s per riga
+      let xs, xe, w;
+      if (pulseRight) {
+        // taratura a fine riga: la riga termina all'impulso e dura 10 s
+        xe = Math.min(r.ext.x1, (pu ? pu.xStart - pxmm * 0.8 : endX !== null ? endX : r.ext.x1));
+        // il "piede" dell'impulso può attaccarsi alla fine della traccia: la riga finisce al primo spazio vuoto
+        // (≥ 0,4 mm) entro gli ultimi 4 mm prima dell'impulso
+        { const g = Math.max(2, Math.round(pxmm * 0.4)); let run = 0; for (let x = Math.round(xe); x > xe - pxmm * 4 && x > 0; x--) { if (!r.cols[x]) { run++; if (run >= g) { xe = x + run - 1; let k = Math.round(xe); while (k > 0 && !r.cols[k]) k--; xe = k; break; } } else run = 0; } }
+        xe -= pxmm * 0.3;
+        xs = Math.max(r.ext.x0 + pxmm * 0.2, xe - totMm * pxmm);
+        w = (xe - xs) / names.length;
+      } else {
+        xs = pu ? pu.xEnd + pxmm * 1.2 : startX !== null ? startX : Math.max(r.xStart, r.ext.x0) + pxmm * 0.5;
+        xe = Math.min(r.ext.x1, xs + totMm * pxmm) - pxmm * 0.3;
+        w = names.length === 1 ? xe - xs : (totMm * pxmm) / names.length;
+      }
       names.forEach((nm, ci) => {
-        const a = xs + ci * w + (ci ? pxmm * 1.0 : 0), b = Math.min(xe, xs + (ci + 1) * w - (ci < names.length - 1 ? pxmm * 1.0 : 0));
+        const mg = pulseRight ? 1.4 : 1.0; // con l'impulso a destra l'inizio della riga è stimato: margine maggiore
+        const a = xs + ci * w + (ci ? pxmm * mg : 0), b = Math.min(xe, xs + (ci + 1) * w - (ci < names.length - 1 ? pxmm * mg : 0));
         const pts = r.pts.filter(p => p[0] >= a && p[0] <= b);
         segs.push({ name: nm, x0: a, x1: b, y: r.y });
         overlay.push({ t: 'label', x: a + pxmm, y: r.y - pxmm * 9, s: nm.replace('*', '') });
@@ -873,7 +989,9 @@
     const Q = [];
     const add = (nome, val, punti, nota) => Q.push({ nome, val, punti, nota });
     add('Nitidezza', sharpN, mossa ? 0 : sharpN >= 0.30 ? 30 : sharpN >= 0.2 ? 18 : sharpN >= 0.14 ? 6 : 0, mossa ? 'foto mossa o sfocata' : sharpN >= 0.3 ? 'buona' : sharpN >= 0.2 ? 'accettabile' : 'foto mossa o sfocata');
-    add('Risoluzione', pxmm, pxmm >= 6 ? 20 : pxmm >= 4.5 ? 12 : pxmm >= 3.5 ? 5 : 0, pxmm.toFixed(1) + ' px/mm' + (pxmm < 4.5 ? ' (avvicinati)' : ''));
+    const pxO = pxmm / upK, digital = GRID !== 'rosa';
+    if (digital) add('Risoluzione', pxO, pxO >= 4.5 ? 20 : pxO >= 3 ? 12 : pxO >= 2.5 ? 5 : 0, pxO.toFixed(1) + ' px/mm' + (upK > 1 ? ' (immagine ingrandita ×' + upK.toFixed(1).replace('.', ',') + ')' : '') + (pxO < 3 ? ' – screenshot troppo piccolo: ingrandisci prima di catturare' : ''));
+    else add('Risoluzione', pxO, pxO >= 6 ? 20 : pxO >= 4.5 ? 12 : pxO >= 3.5 ? 5 : 0, pxO.toFixed(1) + ' px/mm' + (upK > 1 ? ' (immagine ingrandita ×' + upK.toFixed(1).replace('.', ',') + ')' : '') + (pxO < 4.5 ? ' (avvicinati)' : ''));
     add('Continuità della traccia', cov, cov >= 0.97 ? 20 : cov >= 0.9 ? 12 : cov >= 0.8 ? 5 : 0, Math.round(cov * 100) + '%');
     add('Righe del tracciato', rows.length, rows.length >= prof.righe ? 10 : 0, rows.length + '/' + prof.righe);
     add('Taratura', pulseMm, pulseMm == null ? 4 : Math.abs(pulseMm - gain) / gain < 0.06 ? 10 : Math.abs(pulseMm - gain) / gain < 0.12 ? 6 : 0, pulseMm == null ? 'impulso non trovato' : 'impulso ' + pulseMm.toFixed(1) + ' mm');
@@ -888,10 +1006,11 @@
     return {
       ok: Object.keys(leads).length > 0, source: 'foto', profile: prof.nome, quality: { score, level, items: Q },
       rotation: (quarter ? 90 : 0) + (flip ? 180 : 0), skew: th, shear: ph - th, pxPerMm: pxmm, ptPerMm: pxmm, persp,
-      calMethod: 'griglia della foto (' + pxmm.toFixed(2) + ' px/mm)' + (pulseMm ? ' + impulso ' + pulseMm.toFixed(1) + ' mm' : ''),
+      calMethod: (digital ? 'griglia ' + GRID + ' (immagine digitale/screenshot' + (pulseRight ? ', taratura a fine riga' : '') + ')' : 'griglia della foto') + ' – ' + pxO.toFixed(2) + ' px/mm' + (pulseMm ? ' + impulso ' + pulseMm.toFixed(1) + ' mm' : ''),
+      digital, gridColor: GRID, upscale: upK,
       speed, gain, layout: profKey === 'auto' ? 'auto: ' + prof.nome : prof.nome, rows: rows.length,
       leads, rhythm, glob, overlay, warnings, machine: {}, textLines: [], rect, ms: Date.now() - t0,
-      debug: opts.debug ? { rows: rows.map(r => ({ y: r.y, th: r.th, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
+      debug: opts.debug ? { dm: opts.debug === 2 ? dm : undefined, W: outW, H: outH, rows: rows.map(r => ({ y: r.y, th: r.th, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
     };
 
     function fail(msg) { return { ok: false, source: 'foto', quality: { score: 0, level: 'insufficiente', items: [] }, warnings: [msg], leads: {}, overlay: [], machine: {}, textLines: [], glob: {}, rhythm: null, ms: Date.now() - t0 }; }
