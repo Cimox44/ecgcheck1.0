@@ -1023,6 +1023,22 @@
     Object.keys(ANG).forEach(k => { const L = leads[k]; if (!L || L.R === null) return; const n = (L.R || 0) - (L.S || 0) - (L.Q || 0); const t = ANG[k] * Math.PI / 180, cx = Math.cos(t), cy = Math.sin(t); sxx += cx * cx; sxy += cx * cy; syy += cy * cy; bx += n * cx; by += n * cy; nl++; });
     if (nl >= 3) { const det = sxx * syy - sxy * sxy; if (Math.abs(det) > 1e-6) { const ax = (bx * syy - by * sxy) / det, ay = (by * sxx - bx * sxy) / det; if (Math.hypot(ax, ay) > 0.3) glob.asse = Math.round(Math.atan2(ay, ax) * 180 / Math.PI); } }
 
+    // 1.3.7: CONTROLLO DI COERENZA delle derivazioni (sicurezza). Righe mancanti o derivazioni periferiche che
+    // violano le identità di Einthoven/Goldberger (II = I + III; aVR + aVL + aVF = 0; aVR = −(I+II)/2;
+    // aVL = (I−III)/2; aVF = (II+III)/2, sul QRS netto R−S) indicano righe slittate o scambiate (foglio
+    // incurvato: segnalazioni tracciati 5 e 7) → i valori delle derivazioni non vengono proposti.
+    let leadsUnreliable = null;
+    if (rows.length < prof.righe) leadsUnreliable = 'trovate ' + rows.length + ' righe su ' + prof.righe + ': l\'assegnazione delle derivazioni non è sicura';
+    else {
+      const net = k => { const L = leads[k]; return !L || L.unrel || L.R == null ? null : L.R - Math.abs(L.S || 0); };
+      const v = { I: net('I'), II: net('II'), III: net('III'), aVR: net('aVR'), aVL: net('aVL'), aVF: net('aVF') };
+      const ids = [[['II', 'I', 'III'], () => v.II - v.I - v.III], [['aVR', 'aVL', 'aVF'], () => v.aVR + v.aVL + v.aVF], [['aVR', 'I', 'II'], () => v.aVR + (v.I + v.II) / 2], [['aVL', 'I', 'III'], () => v.aVL - (v.I - v.III) / 2], [['aVF', 'II', 'III'], () => v.aVF - (v.II + v.III) / 2]];
+      let nEv = 0, nKo = 0;
+      ids.forEach(([ks, fn]) => { if (ks.some(k => v[k] === null)) return; nEv++; const tol = Math.max(1.5, 0.3 * Math.max.apply(null, ks.map(k => Math.abs(v[k])))); if (Math.abs(fn()) > tol) nKo++; });
+      if (nEv >= 2 && nKo * 2 > nEv) leadsUnreliable = 'le derivazioni periferiche non rispettano la legge di Einthoven (' + nKo + ' controlli su ' + nEv + '): righe probabilmente slittate o scambiate';
+    }
+    if (leadsUnreliable) warnings.unshift('DERIVAZIONI NON AFFIDABILI: ' + leadsUnreliable + '. Ampiezze, ST e asse dalla foto NON vengono proposti (solo FC e ritmo): rifai la foto con il foglio ben piatto (senza fogli sovrapposti) oppure misura con gli strumenti.');
+
     // 9) indice di qualità
     const sh = sharpness(ch, dk.thr);
     const sharpN0 = sh.contrast > 0 ? sh.edge / sh.contrast * (7 / pxmm) : 0; // indipendente da risoluzione e contrasto
@@ -1045,6 +1061,7 @@
     let score = Math.round(Q.reduce((a, q) => a + q.punti, 0));
     // derivazioni mancanti: la lettura non può essere "buona" anche se la foto è nitida
     if (rows.length < prof.righe) score = Math.min(score, 74);
+    if (leadsUnreliable) score = Math.min(score, 55);
     if (mossa) { score = Math.min(score, 40); warnings.unshift('Foto mossa o sfocata (bordi della traccia ' + (sh.dir < 0.5 ? 'trascinati in una direzione' : 'poco definiti') + '): le misure non sono affidabili.'); }
     const level = score >= 75 ? 'buona' : score >= 50 ? 'accettabile' : 'insufficiente';
     if (level === 'insufficiente') warnings.unshift('Qualità insufficiente: rifai la foto (foglio piatto, telefono parallelo, buona luce, niente movimento).');
@@ -1055,7 +1072,7 @@
       calMethod: (digital ? 'griglia ' + GRID + ' (immagine digitale/screenshot' + (pulseRight ? ', taratura a fine riga' : '') + ')' : 'griglia della foto') + ' – ' + pxO.toFixed(2) + ' px/mm' + (pulseMm ? ' + impulso ' + pulseMm.toFixed(1) + ' mm' : ''),
       digital, gridColor: GRID, upscale: upK,
       speed, gain, layout: profKey === 'auto' ? 'auto: ' + prof.nome : prof.nome, rows: rows.length,
-      leads, rhythm, glob, overlay, warnings, machine: {}, textLines: [], rect, ms: Date.now() - t0,
+      leads, rhythm, glob, overlay, warnings, leadsUnreliable, machine: {}, textLines: [], rect, ms: Date.now() - t0,
       debug: opts.debug ? { dm: opts.debug === 2 ? dm : undefined, W: outW, H: outH, rows: rows.map(r => ({ y: r.y, th: r.th, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
     };
 
