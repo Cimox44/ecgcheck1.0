@@ -8,7 +8,7 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.3.5',
+    version: '1.3.6',
     criteriaVersion: '2026.11.5',
     lastReview: '2026-11-10',
     nextReview: '2026-11-16',
@@ -947,10 +947,13 @@
       // Inferiore con reciprocità in aVL (sotto soglia)
       if (!F.has('stemi')) {
         const infUp = ['II', 'III', 'aVF'].filter(l => stv[l] !== null && stv[l] >= 0.5);
-        if (infUp.length && stv.aVL !== null && stv.aVL <= -0.5 && !ctx.lvh) {
-          F.add(CAT.OMI, 'inf-avl', 'OMI inferiore sospetta (STE inferiore sotto soglia con reciprocità in aVL)', LIV.CRIT,
+        // 1.3.6: almeno 2 derivazioni inferiori (contigue) con STE ≥ 0,5 mm: con una sola derivazione a 0,5 mm il
+        // reperto è nel rumore di misura (foto) – segnalazione: falso OMI in BBDx + EAS (tracciato 4)
+        const qrsLargo = m.qrs !== null && m.qrs >= 120;
+        if (infUp.length >= 2 && stv.aVL !== null && stv.aVL <= -0.5 && !ctx.lvh) {
+          F.add(CAT.OMI, 'inf-avl', 'OMI inferiore sospetta (STE inferiore sotto soglia con reciprocità in aVL)' + (qrsLargo ? ' – da confermare (QRS largo)' : ''), qrsLargo ? LIV.ALTO : LIV.CRIT,
             ['STE in ' + infUp.map(l => l + ' ' + f1(stv[l]) + ' mm').join(', ') + ' con sottoslivellamento in aVL ' + f1(stv.aVL) + ' mm.',
-              'Il sottoslivellamento in aVL è raro nella pericardite e nella ripolarizzazione precoce (alta sensibilità per IMA inferiore).'],
+              'Il sottoslivellamento in aVL è raro nella pericardite e nella ripolarizzazione precoce (alta sensibilità per IMA inferiore).'].concat(qrsLargo ? ['QRS ' + r0(m.qrs) + ' ms: con blocco di branca/emiblocco lo ST di aVL e delle inferiori può essere secondario; confronta con ECG precedenti e valuta la proporzionalità al QRS.'] : []),
             'Bischof, Smith Am J Emerg Med 2016; IV UDMI 2018', 'ECG seriati ogni 15–30 min, troponina, ecocardiogramma; discutere con emodinamista.', 'omi');
         }
       }
@@ -1114,10 +1117,15 @@
           const ratio = stv.V6 / tV6;
           ginz = 'Rapporto ST/T in V6 = ' + f2(ratio) + (ratio >= 0.25 ? ' (≥ 0,25: favorisce pericardite su ripolarizzazione precoce).' : ' (< 0,25: favorisce ripolarizzazione precoce).');
         }
-        if (contro.length) {
+        // 1.3.6: «favorire OMI» solo se c'è davvero uno STE (≥ 0,5 mm in ≥ 2 derivazioni non aVR/V1); il solo PR
+        // sottoslivellato con piccoli ST negativi (foto) non basta – segnalazione: falso OMI (tracciato 4)
+        if (contro.length && diffuse.length >= 2) {
           F.add(CAT.RIPOL, 'peric-vs-omi', 'STE diffuso: elementi CONTRO la pericardite — favorire OMI', LIV.CRIT,
             ['Segni pericarditici: ' + pericSegni.join('; ') + '.', 'Elementi a favore di ischemia: ' + contro.join('; ') + '.', ginz].filter(Boolean),
             'ESC 2025 Miocarditi/Pericarditi; Bischof & Smith 2016', 'La SCA è la principale diagnosi differenziale (ESC 2025): ECG seriati, troponina, ecocardiogramma, coronarografia se dubbio.', 'omi');
+        } else if (contro.length) {
+          F.add(CAT.RIPOL, 'pr-isolato', 'Alterazioni del PR senza sopraslivellamento ST diffuso', LIV.INFO,
+            ['Segni: ' + pericSegni.join('; ') + '. Senza STE diffuso non sono sufficienti per la pericardite né indicano un OMI.', 'Presenti anche ' + contro.join('; ') + ': verificali sul tracciato (piccoli valori letti dalla foto possono essere rumore di misura).'], 'ESC 2025 Miocarditi e Pericarditi');
         } else {
           F.add(CAT.RIPOL, 'pericardite', 'Pattern ECG di pericardite acuta', LIV.ALTO,
             ['Criteri: ' + pericSegni.join('; ') + '; assenza di reciprocità (eccetto aVR/V1).', ginz,
