@@ -994,7 +994,9 @@
       }
 
       // Inversione T
-      const tInv = LEADS.filter(l => l !== 'aVR' && l !== 'III' && l !== 'V1' && amp(d, l, 't') !== null && amp(d, l, 't') <= -1 && (amp(d, l, 'r') || 0) >= (amp(d, l, 's') || 0));
+      // 1.3.6: III conta solo insieme ad aVF/II (T negativa isolata in III è spesso normale) – UDMI: ≥ 2 derivazioni contigue
+      let tInv = LEADS.filter(l => l !== 'aVR' && l !== 'V1' && amp(d, l, 't') !== null && amp(d, l, 't') <= -1 && (amp(d, l, 'r') || 0) >= (amp(d, l, 's') || 0));
+      if (tInv.includes('III') && !tInv.includes('aVF') && !tInv.includes('II')) tInv = tInv.filter(l => l !== 'III');
       const tStrain = (ctx.strain || ctx.strainNoVolt) && tInv.every(l => (ctx.strainLeads || []).includes(l) || l === 'V4');
       if (tInv.length >= 2 && CONTIG.some(c => tInv.includes(c[0]) && tInv.includes(c[1])) && !ctx.rbbb && !tStrain) {
         F.add(CAT.RIPOL, 't-inv', 'Inversione dell\'onda T', LIV.MOD,
@@ -1117,15 +1119,17 @@
           const ratio = stv.V6 / tV6;
           ginz = 'Rapporto ST/T in V6 = ' + f2(ratio) + (ratio >= 0.25 ? ' (≥ 0,25: favorisce pericardite su ripolarizzazione precoce).' : ' (< 0,25: favorisce ripolarizzazione precoce).');
         }
-        // 1.3.6: «favorire OMI» solo se c'è davvero uno STE (≥ 0,5 mm in ≥ 2 derivazioni non aVR/V1); il solo PR
+        // 1.3.6: «favorire OMI» solo se c'è davvero uno STE diffuso (≥ 0,5 mm in ≥ 4 derivazioni di ≥ 2 territori); il solo PR
         // sottoslivellato con piccoli ST negativi (foto) non basta – segnalazione: falso OMI (tracciato 4)
-        if (contro.length && diffuse.length >= 2) {
+        const steDiff = diffuse.length >= 4 && terr.length >= 2;
+        if (contro.length && steDiff) {
           F.add(CAT.RIPOL, 'peric-vs-omi', 'STE diffuso: elementi CONTRO la pericardite — favorire OMI', LIV.CRIT,
             ['Segni pericarditici: ' + pericSegni.join('; ') + '.', 'Elementi a favore di ischemia: ' + contro.join('; ') + '.', ginz].filter(Boolean),
             'ESC 2025 Miocarditi/Pericarditi; Bischof & Smith 2016', 'La SCA è la principale diagnosi differenziale (ESC 2025): ECG seriati, troponina, ecocardiogramma, coronarografia se dubbio.', 'omi');
-        } else if (contro.length) {
+        } else if (!steDiff) {
+          // 1.3.6: senza STE diffuso il solo PR alterato non basta per il «pattern di pericardite» (segnalazione tracciato 6)
           F.add(CAT.RIPOL, 'pr-isolato', 'Alterazioni del PR senza sopraslivellamento ST diffuso', LIV.INFO,
-            ['Segni: ' + pericSegni.join('; ') + '. Senza STE diffuso non sono sufficienti per la pericardite né indicano un OMI.', 'Presenti anche ' + contro.join('; ') + ': verificali sul tracciato (piccoli valori letti dalla foto possono essere rumore di misura).'], 'ESC 2025 Miocarditi e Pericarditi');
+            ['Segni: ' + pericSegni.join('; ') + '. Senza STE diffuso (≥ 4 derivazioni di ≥ 2 territori) non bastano per il pattern ECG di pericardite né indicano un OMI.'].concat(contro.length ? ['Presenti anche ' + contro.join('; ') + ': verificali sul tracciato (piccoli valori letti dalla foto possono essere rumore di misura).'] : []).concat(ctx.postCCH ? ['Post-cardiochirurgia: la pericardite post-pericardiotomica è una diagnosi clinica (dolore, sfregamento, versamento, PCR): l\'ECG può essere poco tipico.'] : []), 'ESC 2025 Miocarditi e Pericarditi');
         } else {
           F.add(CAT.RIPOL, 'pericardite', 'Pattern ECG di pericardite acuta', LIV.ALTO,
             ['Criteri: ' + pericSegni.join('; ') + '; assenza di reciprocità (eccetto aVR/V1).', ginz,
