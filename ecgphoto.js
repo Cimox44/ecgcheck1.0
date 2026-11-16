@@ -79,16 +79,16 @@
   }
   function channels(img) {
     const { width: W, height: H, data } = img;
-    const n = W * H, lum = new Float32Array(n), rg = new Float32Array(n), sat = new Uint8Array(n), mn = new Float32Array(n);
+    const n = W * H, lum = new Float32Array(n), rg = new Float32Array(n), sat = new Uint8Array(n), mn = new Float32Array(n), red = new Float32Array(n);
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       const r = data[j], g = data[j + 1], b = data[j + 2];
       const l = 0.299 * r + 0.587 * g + 0.114 * b;
-      lum[i] = l; mn[i] = Math.min(r, g, b);
+      lum[i] = l; mn[i] = Math.min(r, g, b); red[i] = r;
       // "rg" = intensità del colore della griglia (storicamente R−G per la carta rosa)
       rg[i] = GRID === 'rosa' ? r - g : GRID === 'blu' ? (b - r) * 1.6 : GRID === 'verde' ? (g - (r + b) / 2) * 1.6 : (l > 150 ? Math.max(0, 250 - l) * 0.8 : 0);
       sat[i] = Math.max(r, g, b) - Math.min(r, g, b);
     }
-    return { W, H, lum, rg, sat, mn };
+    return { W, H, lum, rg, sat, mn, red };
   }
   // ingrandimento bilineare delle immagini piccole (screenshot): la traccia sottile e la griglia a
   // 3–4 px/mm diventano inseguibili; le misure in mm/ms non dipendono dalla scala
@@ -178,7 +178,7 @@
   //    stampata (2–3 px) no → soglia al 50% del livello della traccia (99,5° percentile di c3)
   // 3) isteresi limitata: pixel con c alto a ≤ 2 px da pixel forti (tratti sottili del QRS)
   // 4) rimozione dei puntini isolati (incroci della griglia)
-  function traceMask(ch, pm, dk, r, pxmm, noGrid) {
+  function traceMask(ch, pm, dk, r, pxmm, noGrid, opts_thin) {
     const { W, H } = ch;
     // griglia non rosa: canale minimo RGB (traccia nera e segni colorati come l'impulso blu risaltano,
     // la griglia chiara no)
@@ -219,6 +219,28 @@
       for (let it = 0; it < steps && front.length; it++) {
         const nf = [];
         for (const i of front) { const x = i % W, y = (i / W) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 1 || yy < 1 || xx >= W - 1 || yy >= H - 1) continue; const k = yy * W + xx; if (!out[k] && c[k] > dT && inPaper(pm, xx, yy)) { out[k] = 1; nf.push(k); } } }
+        front = nf;
+      }
+    }
+    if (!digital && ch.red && !noGrid && opts_thin !== false) {
+      // 1.4.0: TRACCIA SOTTILE/CHIARA su carta rosa (tratti ripidi del QRS di 1 px, stampante scarica): nel
+      // canale ROSSO la griglia rossa è quasi invisibile, la traccia grigia/nera no → crescita (≤ 1,5 mm)
+      // dai pixel già accettati verso i pixel scuri nel rosso; nuovi semi dove il contrasto nel rosso è alto
+      const R = ch.red, bR = blur2D(R, W, H, r), cR = new Float32Array(W * H);
+      for (let i = 0; i < W * H; i++) cR[i] = bR[i] - R[i];
+      const sR = [], sS = []; for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (inPaper(pm, x, y)) { sR.push(cR[y * W + x]); sS.push(ch.sat[y * W + x]); }
+      // la traccia grigia è MENO satura della carta rosa; le linee della griglia sono PIÙ sature
+      const satMax = (pctl(sS, 0.5) || 40) * 1.0;
+      const SA = ch.sat;
+      const lvR = Math.max(18, pctl(sR, 0.995) || 40);
+      dk.levelR = lvR;
+      const seedT = lvR * 0.55, growT = lvR * 0.28;
+      let front = [];
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x; if (out[i]) front.push(i); else if (cR[i] > seedT && SA[i] < satMax && inPaper(pm, x, y)) { out[i] = 1; front.push(i); } }
+      const steps = Math.max(4, Math.round((pxmm || 7) * 1.5));
+      for (let it = 0; it < steps && front.length; it++) {
+        const nf = [];
+        for (const i of front) { const x = i % W, y = (i / W) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 1 || yy < 1 || xx >= W - 1 || yy >= H - 1) continue; const k = yy * W + xx; if (!out[k] && cR[k] > growT && SA[k] < satMax && inPaper(pm, xx, yy)) { out[k] = 1; nf.push(k); } } }
         front = nf;
       }
     }
@@ -456,12 +478,186 @@
       s.cov = cols / W; return s.cov > 0.35;
     }).map(s => s.y);
   }
-  function columnRuns(dm, W, x, ya, yb) {
+  /* =====================================================================
+     4b. 1.4.0 – FOGLIO INCURVATO: inseguimento delle righe per bande verticali
+     Il foglio sollevato (es. foglio bianco sovrapposto in alto) inclina le tracce
+     rispetto alla griglia in modo NON uniforme (righe alte più inclinate): una
+     correzione globale (taglio) non basta. Si cerca la linea di base di ogni riga in
+     bande verticali di ~25 mm (passo 12,5 mm), si collegano i segmenti banda per
+     banda e si "raddrizza" l'immagine con uno spostamento verticale che varia con x
+     e (linearmente) tra le righe.
+     ===================================================================== */
+  // 1.4.0: SCALA DEI TEMPI NON UNIFORME (foglio incurvato o foto non frontale): il passo della griglia
+  // misurato in strisce verticali di ~40 mm varia da sinistra a destra (foto 5: RR 735 ms a sinistra vs
+  // 660 ms a destra) → l'immagine viene ricampionata in orizzontale a passo costante
+  function hUnwarp(rect, ch, W, H, pxmm) {
+    const sw = Math.round(pxmm * 40), st = Math.round(pxmm * 20), xs = [], ps = [];
+    for (let xa = 0; xa + sw <= W; xa += st) {
+      const g = gridPeriod(ch, 'x', xa, xa + sw, 0, H);
+      const near = L => { let b = null; g.mx.forEach(m => { if (Math.abs(m.lag - L) < L * 0.1 && (!b || m.v > b.v)) b = m; }); return b; };
+      const p5 = near(5 * pxmm), p10 = near(10 * pxmm);
+      // il picco a 10 mm è più preciso; deve concordare con quello a 5 mm
+      let v = p10 && p5 && Math.abs(p10.lag / 10 - p5.lag / 5) < pxmm * 0.04 ? p10.lag / 10 : p5 ? p5.lag / 5 : null;
+      if (v) { xs.push((xa + sw / 2) / W); ps.push(v); }
+    }
+    if (ps.length < 5) return null;
+    let use = xs.map((x, i) => i), f = null;
+    for (let it = 0; it < 3; it++) {
+      f = polyfit2(use.map(i => xs[i]), use.map(i => ps[i])); if (!f) return null;
+      const keep = use.filter(i => Math.abs(f(xs[i]) - ps[i]) < pxmm * 0.03);
+      if (keep.length === use.length || keep.length < 5) break; use = keep;
+    }
+    const pv = []; for (let x = 0; x < W; x += Math.max(1, Math.round(W / 50))) pv.push(f(x / W));
+    const mn = Math.min.apply(null, pv), mx = Math.max.apply(null, pv);
+    if (!(mn > pxmm * 0.8 && mx < pxmm * 1.2)) return null;
+    const vari = mx / mn - 1;
+    if (vari < 0.03) return { applied: false, vari };
+    // mm(x) cumulativo e mappa inversa u (px a passo costante) → x sorgente
+    const mm = new Float64Array(W + 1); for (let x = 0; x < W; x++) mm[x + 1] = mm[x] + 1 / f((x + 0.5) / W);
+    const tot = mm[W] * pxmm, outW = Math.round(tot);
+    const srcX = new Float32Array(outW); let k = 0;
+    for (let u = 0; u < outW; u++) { const m = u / pxmm; while (k < W - 1 && mm[k + 1] < m) k++; srcX[u] = k + (m - mm[k]) / Math.max(1e-6, mm[k + 1] - mm[k]); }
+    const src = rect.data, out = new Uint8ClampedArray(outW * H * 4);
+    for (let y = 0; y < H; y++) for (let u = 0; u < outW; u++) {
+      const x = srcX[u], x0 = Math.min(W - 2, x | 0), fx = x - x0, i0 = (y * W + x0) * 4, o = (y * outW + u) * 4;
+      out[o] = src[i0] * (1 - fx) + src[i0 + 4] * fx; out[o + 1] = src[i0 + 1] * (1 - fx) + src[i0 + 5] * fx; out[o + 2] = src[i0 + 2] * (1 - fx) + src[i0 + 6] * fx; out[o + 3] = 255;
+    }
+    return { applied: true, vari, rect: { width: outW, height: H, data: out }, W: outW };
+  }
+  function bandPeaks(dm, W, H, pxmm, xa, xb) {
+    const rp = new Float32Array(H);
+    for (let y = 0; y < H; y++) { let c = 0; const o = y * W; for (let x = xa; x < xb; x++) c += dm[o + x]; rp[y] = c; }
+    const sm = boxBlur1D(rp, H, Math.max(1, Math.round(pxmm * 0.5)));
+    const loc = []; for (let y = 1; y < H - 1; y++) if (sm[y] >= sm[y - 1] && sm[y] > sm[y + 1]) loc.push(sm[y]);
+    loc.sort((a, b) => b - a);
+    const mx = loc.length ? loc[Math.min(loc.length - 1, 2)] : 0;
+    const pk = []; for (let y = 1; y < H - 1; y++) if (sm[y] >= sm[y - 1] && sm[y] > sm[y + 1] && sm[y] > mx * 0.25 && sm[y] > (xb - xa) * 0.06) pk.push({ y, v: sm[y] });
+    pk.sort((a, b) => b.v - a.v);
+    const sel = []; pk.forEach(p => { if (sel.every(s => Math.abs(s.y - p.y) > 9 * pxmm)) sel.push(p); });
+    // centro sub-pixel (baricentro locale)
+    return sel.map(p => { let s = 0, w = 0; for (let y = Math.max(0, p.y - Math.round(pxmm)); y <= Math.min(H - 1, p.y + Math.round(pxmm)); y++) { s += y * sm[y]; w += sm[y]; } return { y: w ? s / w : p.y, v: p.v }; }).sort((a, b) => a.y - b.y);
+  }
+  function polyfit2(xs, ys) {
+    // y = a + b x + c x² (minimi quadrati, equazioni normali 3×3)
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+    xs.forEach((x, i) => { const y = ys[i], x2 = x * x; s0++; s1 += x; s2 += x2; s3 += x2 * x; s4 += x2 * x2; t0 += y; t1 += x * y; t2 += x2 * y; });
+    const M = [[s0, s1, s2, t0], [s1, s2, s3, t1], [s2, s3, s4, t2]];
+    for (let c = 0; c < 3; c++) { let p = c; for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r; [M[c], M[p]] = [M[p], M[c]]; if (Math.abs(M[c][c]) < 1e-9) return null; for (let r = 0; r < 3; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k < 4; k++) M[r][k] -= f * M[c][k]; } }
+    const a = M[0][3] / M[0][0], b = M[1][3] / M[1][1], c = M[2][3] / M[2][2];
+    return x => a + b * x + c * x * x;
+  }
+  function rowTracks(dm, W, H, pxmm, ys) {
+    const bw = Math.round(pxmm * 25), stp = Math.round(pxmm * 12.5);
+    const bands = [];
+    for (let xa = 0; xa + bw <= W; xa += stp) bands.push({ xc: xa + bw / 2, pk: bandPeaks(dm, W, H, pxmm, xa, xa + bw) });
+    if (bands.length < 4 || !ys.length) return null;
+    // collegamento: per ogni riga, partenza dalla banda in cui il picco è più vicino alla riga globale,
+    // poi propagazione a destra e a sinistra con predizione lineare (pendenza della banda precedente)
+    // semi: righe globali + picchi di alcune bande di riferimento (una riga molto inclinata può mancare
+    // nella proiezione globale); i duplicati si eliminano dopo l'inseguimento
+    const seeds = ys.slice();
+    [0.15, 0.5, 0.85].forEach(f => { const b = bands[Math.min(bands.length - 1, Math.round(f * (bands.length - 1)))]; b.pk.forEach(p => { if (seeds.every(y => Math.abs(y - p.y) > pxmm * 5)) seeds.push(p.y); }); });
+    seeds.sort((a, b) => a - b);
+    let tracks = seeds.map(y0 => {
+      let best = -1, bd = Infinity;
+      bands.forEach((b, i) => b.pk.forEach(p => { const d = Math.abs(p.y - y0); if (d < bd) { bd = d; best = i; } }));
+      const t = new Array(bands.length).fill(null);
+      if (best < 0 || bd > pxmm * 4) return t;
+      t[best] = bands[best].pk.reduce((a, p) => Math.abs(p.y - y0) < Math.abs(a.y - y0) ? p : a).y;
+      for (const dir of [1, -1]) {
+        let last = best, slope = 0, miss = 0;
+        for (let i = best + dir; i >= 0 && i < bands.length; i += dir) {
+          const pred = t[last] + slope * (i - last);
+          let m = null, md = pxmm * (1.2 + 0.8 * miss);
+          bands[i].pk.forEach(p => { const d = Math.abs(p.y - pred); if (d < md) { md = d; m = p; } });
+          if (m) { const s = (m.y - t[last]) / (i - last); slope = clamp(Math.abs(i - last) === 1 ? 0.5 * slope + 0.5 * s : s, -stp * 0.1, stp * 0.1); t[i] = m.y; last = i; miss = 0; }
+          else if (++miss > 3) break;
+        }
+      }
+      return t;
+    });
+    // tracce duplicate (stessa riga raggiunta da due semi): si tiene quella con più bande
+    const cnt = t => t.filter(v => v != null).length;
+    tracks = tracks.filter((t, k) => !tracks.some((u, j) => j !== k && (cnt(u) > cnt(t) || (cnt(u) === cnt(t) && j < k)) && t.every((v, i) => v == null || u[i] == null || Math.abs(v - u[i]) < pxmm * 3) && t.some((v, i) => v != null && u[i] != null)));
+    tracks.sort((a, b) => median(a.filter(v => v != null)) - median(b.filter(v => v != null)));
+    // le tracce non possono incrociarsi né avvicinarsi a meno di 9 mm
+    for (let i = 0; i < bands.length; i++) for (let k = 1; k < tracks.length; k++) {
+      const a = tracks[k - 1][i], b = tracks[k][i];
+      if (a != null && b != null && b - a < pxmm * 9) { tracks[k][i] = null; tracks[k - 1][i] = null; }
+    }
+    // interpolazione / estrapolazione costante + lisciatura (mediana di 3)
+    const xs = bands.map(b => b.xc);
+    const out = tracks.map(t => {
+      const idx = t.map((v, i) => v != null ? i : -1).filter(i => i >= 0);
+      if (idx.length < Math.max(3, bands.length * 0.6)) return null;
+      const f = t.slice();
+      for (let i = 0; i < f.length; i++) if (f[i] == null) {
+        let a = -1, b = -1; for (let j = i - 1; j >= 0; j--) if (t[j] != null) { a = j; break; } for (let j = i + 1; j < f.length; j++) if (t[j] != null) { b = j; break; }
+        f[i] = a < 0 ? t[b] : b < 0 ? t[a] : t[a] + (t[b] - t[a]) * (i - a) / (b - a);
+      }
+      // curva liscia: parabola ai minimi quadrati con esclusione iterativa dei punti anomali (> 1 mm)
+      let use = idx.slice(), cf = null;
+      for (let it = 0; it < 3; it++) {
+        cf = polyfit2(use.map(i => i / (f.length - 1)), use.map(i => t[i]));
+        if (!cf) return null;
+        const keep = use.filter(i => Math.abs(cf(i / (f.length - 1)) - t[i]) <= pxmm);
+        if (keep.length === use.length || keep.length < Math.max(3, bands.length * 0.5)) break;
+        use = keep;
+      }
+      if (use.length < Math.max(3, bands.length * 0.5)) return null;
+      return f.map((v, i) => cf(i / (f.length - 1)));
+    });
+    return { xs, tracks: out };
+  }
+  // spostamento verticale per colonna x e quota Y (raddrizzata)
+  function decurve(rect, dm, W, H, pxmm, ys) {
+    const rt = rowTracks(dm, W, H, pxmm, ys);
+    if (!rt) return null;
+    const T = rt.tracks.map((t, k) => t ? { t, Y: median(t), k } : null).filter(o => o && o.t.every(v => Math.abs(v - o.Y) < pxmm * 12));
+    // righe che si incrociano o si avvicinano a < 9 mm dopo la lisciatura: scartate
+    for (let k = T.length - 1; k > 0; k--) if (T[k].t.some((v, i) => v - T[k - 1].t[i] < pxmm * 9)) { T.splice(T[k].t.reduce((a, b) => a + Math.abs(b - T[k].Y), 0) > T[k - 1].t.reduce((a, b) => a + Math.abs(b - T[k - 1].Y), 0) ? k : k - 1, 1); }
+    if (T.length < 2) return null;
+    let dev = 0, tilt = 0;
+    T.forEach(o => { o.t.forEach(v => { dev = Math.max(dev, Math.abs(v - o.Y)); }); });
+    const xs = rt.xs;
+    T.forEach(o => { const n = o.t.length; tilt = Math.max(tilt, Math.abs(Math.atan2(o.t[n - 1] - o.t[0], xs[n - 1] - xs[0]) * 180 / Math.PI)); });
+    if (dev < pxmm * 0.8) return { applied: false, dev: dev / pxmm, tilt, n: T.length };
+    // spostamento d(x) per ogni riga, interpolato in x
+    const D = T.map(o => { const d = new Float32Array(W); for (let x = 0; x < W; x++) { let i = 0; while (i < xs.length - 2 && xs[i + 1] < x) i++; const f = clamp((x - xs[i]) / (xs[i + 1] - xs[i]), 0, 1); d[x] = (o.t[i] + (o.t[i + 1] - o.t[i]) * f) - o.Y; } return d; });
+    const Ys = T.map(o => o.Y);
+    const src = rect.data, out = new Uint8ClampedArray(src.length);
+    for (let y = 0; y < H; y++) {
+      let k = 0; while (k < Ys.length - 1 && Ys[k + 1] < y) k++;
+      const k1 = Math.min(Ys.length - 1, k + 1);
+      const f = y <= Ys[0] ? 0 : y >= Ys[Ys.length - 1] ? 1 : clamp((y - Ys[k]) / Math.max(1, Ys[k1] - Ys[k]), 0, 1);
+      const da = y <= Ys[0] ? D[0] : y >= Ys[Ys.length - 1] ? D[Ys.length - 1] : D[k], db = y <= Ys[0] ? D[0] : y >= Ys[Ys.length - 1] ? D[Ys.length - 1] : D[k1];
+      for (let x = 0; x < W; x++) {
+        const sy = y + da[x] * (1 - f) + db[x] * f; const o = (y * W + x) * 4;
+        if (sy < 0 || sy >= H - 1) { out[o] = out[o + 1] = out[o + 2] = out[o + 3] = 255; continue; }
+        const y0 = sy | 0, fy = sy - y0, i0 = (y0 * W + x) * 4, i1 = i0 + W * 4;
+        out[o] = src[i0] * (1 - fy) + src[i1] * fy; out[o + 1] = src[i0 + 1] * (1 - fy) + src[i1 + 1] * fy; out[o + 2] = src[i0 + 2] * (1 - fy) + src[i1 + 2] * fy; out[o + 3] = 255;
+      }
+    }
+    return { applied: true, rect: { width: W, height: H, data: out }, dev: dev / pxmm, tilt, n: T.length, tracks: T.map(o => ({ Y: o.Y, t: o.t })) };
+  }
+
+  function columnRuns(dm, W, x, ya, yb, bridge) {
     const runs = []; let st = -1;
     for (let y = ya; y <= yb; y++) {
       const d = dm[y * W + x];
       if (d && st < 0) st = y;
       if ((!d || y === yb) && st >= 0) { const en = d ? y : y - 1; if (runs.length && st - runs[runs.length - 1][1] <= 2) runs[runs.length - 1][1] = en; else runs.push([st, en]); st = -1; }
+    }
+    if (bridge && runs.length > 1) {
+      // 1.4.0: tratto ripido sottile spezzato (traccia chiara): i "buchi" coperti dalle colonne vicine
+      // (x ± 1) o lunghi ≤ 0,6 mm tra due tratti lunghi sono colmati
+      const out = [runs[0]];
+      for (let i = 1; i < runs.length; i++) {
+        const a = out[out.length - 1], b = runs[i]; let cov = true;
+        for (let y = a[1] + 1; y < b[0] && cov; y++) { const l = x > 0 && dm[y * W + x - 1], r = x < W - 1 && dm[y * W + x + 1], l2 = x > 1 && dm[y * W + x - 2], r2 = x < W - 2 && dm[y * W + x + 2]; if (!(l || r || l2 || r2)) cov = false; }
+        if (cov && b[0] - a[1] <= bridge) a[1] = b[1]; else out.push(b);
+      }
+      return out;
     }
     return runs;
   }
@@ -526,7 +722,7 @@
       // se non toccano la nostra linea di base sono scartate, se la toccano (tracce fuse) vengono tagliate
       // alla metà della distanza tra le righe e la colonna è marcata come "fusa" (misura da verificare)
       const runs = [];
-      columnRuns(dm, W, x, ya, yb).forEach(r0 => {
+      columnRuns(dm, W, x, ya, yb, GRID === 'rosa' ? Math.round(pxmm * 0.7) : 0).forEach(r0 => {
         const r = r0.slice(); const u = nearNb(r, nbU), d = nearNb(r, nbD);
         if (!u && !d) { runs.push(r); return; }
         if (!ownB(r)) return;
@@ -780,7 +976,21 @@
     const pxmm = pxmmX;
     let pm = paperMask(ch);
     let dk = darkThreshold(ch, pm);
-    let dm = traceMask(ch, pm, dk, Math.round(pxmmX * 2.5), pxmmX);
+    let hu = null, dc = null, dm = null;
+    let chS = ch, dkS = dk;
+    const prep = () => {
+      chS = ch; dkS = darkThreshold(ch, pm); // nitidezza misurata prima dei ricampionamenti
+      // 1.4.0: scala dei tempi uniforme (prospettiva/foglio incurvato) e righe raddrizzate una per una
+      hu = opts.hunwarp === false ? null : hUnwarp(rect, ch, outW, outH, pxmmX);
+      if (hu && hu.applied) { rect = hu.rect; outW = hu.W; ch = channels(rect); pm = paperMask(ch); dk = darkThreshold(ch, pm); }
+      dm = traceMask(ch, pm, dk, Math.round(pxmmX * 2.5), pxmmX);
+      dc = null;
+      if (opts.decurve !== false) {
+        dc = decurve(rect, dm, outW, outH, pxmmX, findRows(dm, outW, outH, pxmmX));
+        if (dc && dc.applied) { rect = dc.rect; ch = channels(rect); pm = paperMask(ch); dk = darkThreshold(ch, pm); dm = traceMask(ch, pm, dk, Math.round(pxmmX * 2.5), pxmmX); }
+      }
+    };
+    prep();
 
     // 6) righe e capovolgimento (180°)
     const prefRows = profKey !== 'auto' ? PROFILES[profKey].righe : null;
@@ -867,8 +1077,9 @@
     if (wantFlip && !opts._flipped) {
       flip = true;
       map = makeAffine(img.width, img.height, quarter, tr, pr, sy, u0, v0, true, outW, outH);
+      outW = Math.round(u1 - u0);
       rect = render(img, map, outW, outH);
-      ch = channels(rect); pm = paperMask(ch); dk = darkThreshold(ch, pm); dm = traceMask(ch, pm, dk, Math.round(pxmmX * 2.5), pxmmX);
+      ch = channels(rect); pm = paperMask(ch); dk = darkThreshold(ch, pm); prep();
       rows = analyseRows(dm);
       ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU, LI: r.pulseLI }));
     }
@@ -924,7 +1135,7 @@
         const mg = pulseRight ? 1.4 : 1.0; // con l'impulso a destra l'inizio della riga è stimato: margine maggiore
         const a = xs + ci * w + (ci ? pxmm * mg : 0), b = Math.min(xe, xs + (ci + 1) * w - (ci < names.length - 1 ? pxmm * mg : 0));
         const pts = r.pts.filter(p => p[0] >= a && p[0] <= b);
-        segs.push({ name: nm, x0: a, x1: b, y: r.y });
+        segs.push({ name: nm, x0: a, x1: b, y: r.y, ci });
         overlay.push({ t: 'label', x: a + pxmm, y: r.y - pxmm * 9, s: nm.replace('*', '') });
         if (nm.endsWith('*')) { if (!rhythmPts) { rhythmPts = pts; rhythmName = nm.replace('*', '') + ' (striscia)'; } return; }
         if (pts.length < pxmm * 20 || leads[nm]) return;
@@ -979,6 +1190,32 @@
       const rr = S.analyzeRhythm(L);
       if (rr) { RR.push.apply(RR, rr.rr); if (k === 0) pInfo = rr; L.marks.forEach(mk => overlay.push({ t: 'r', x: mk.r * pxmm, y: -mk.ry * pxmm / (10 / gain) })); }
     });
+    // 1.4.0: BATTITI DI CONSENSO – nel 6×2 (e nel 3×4) le derivazioni della stessa colonna sono registrate in
+    // contemporanea: un QRS vero compare alla stessa ascissa (± 70 ms) in più derivazioni; battiti persi in una
+    // derivazione (traccia sottile) o onde T contate come QRS in un'altra non cambiano la FC
+    const cons = (() => {
+      const byCol = {};
+      segs.forEach(sg => { const L = leads[sg.name]; if (!L) return; const key = sg.ci; const ms = i => L.toX(i) / speed * 1000, cut = 2 * 2; (byCol[key] = byCol[key] || []).push(L.beats.map(b => ({ t: ms(b.c), on: ms(b.on) + cut, off: ms(b.off) - cut, unrel: !!L.unrel }))); });
+      const allRR = [], consBeats = []; let nCols = 0;
+      Object.values(byCol).forEach(list => {
+        if (list.length < 2) return;
+        const ev = []; list.forEach((ts, li) => ts.forEach(b => ev.push({ t: b.t, li, b })));
+        ev.sort((a, b) => a.t - b.t);
+        const cl = []; ev.forEach(e => { const c = cl[cl.length - 1]; if (c && e.t - c.ts[0] <= 110 && !c.l.has(e.li)) { c.t1 = e.t; c.ts.push(e.t); c.bs.push(e.b); c.l.add(e.li); } else cl.push({ t1: e.t, ts: [e.t], bs: [e.b], l: new Set([e.li]) }); });
+        // scelta greedy: prima i gruppi presenti in più derivazioni; periodo refrattario 250 ms (onde T o S
+        // contate come battito in alcune derivazioni non entrano); gruppi di una sola derivazione ignorati
+        const acc = [];
+        cl.filter(c => c.l.size >= 2).sort((a, b) => b.l.size - a.l.size).forEach(c => { const t = median(c.ts); if (acc.every(u => Math.abs(u.t - t) >= 250)) acc.push({ t, c }); });
+        acc.sort((a, b) => a.t - b.t);
+        const bt = acc.map(a => a.t);
+        // durata GLOBALE del QRS (come gli elettrocardiografi): dal 2° inizio più precoce alla 2ª fine più tardiva
+        // tra le derivazioni simultanee (≥ 3 derivazioni affidabili)
+        acc.forEach(a => { const bs = a.c.bs.filter(b => !b.unrel); if (bs.length < 3) return; const on = bs.map(b => b.on).sort((p, q) => p - q), off = bs.map(b => b.off).sort((p, q) => q - p); consBeats.push({ t: a.t, qrs: off[1] - on[1], n: bs.length }); });
+        for (let i = 1; i < bt.length; i++) allRR.push(bt[i] - bt[i - 1]);
+        nCols++;
+      });
+      return allRR.length >= 3 ? { rr: allRR, med: median(allRR), nCols, beats: consBeats } : null;
+    })();
     // FC robusta: mediana degli RR di tutte le derivazioni (ogni derivazione = 2,5–10 s)
     const leadRR = [];
     Object.values(leads).forEach(L => { const p = L.beats.map(bt => bt.c); for (let i = 1; i < p.length; i++) leadRR.push((p[i] - p[i - 1]) * 2); });
@@ -992,7 +1229,12 @@
       if ((RR.length >= 2 ? RR : leadRR).length - useRR.length > 0) warnings.push('Alcuni battiti non sono stati riconosciuti con certezza: verifica FC e regolarità sul tracciato.');
       // 1.3.4: con ≥ 3 RR della riga del ritmo si usa la loro mediana (prima: mediana di tutte le derivazioni →
       // RR medio fuori dall'intervallo min–max mostrato, es. 965 ms con min 934 – max 944)
-      const m = useRR.length >= 3 ? median(useRR) : (rrMed || useRR.reduce((a, b) => a + b, 0) / useRR.length);
+      let m = useRR.length >= 3 ? median(useRR) : (rrMed || useRR.reduce((a, b) => a + b, 0) / useRR.length);
+      // 1.4.0: la riga del ritmo non concorda con i battiti di consenso (battiti persi o T contate come QRS)
+      if (cons && Math.abs(cons.med - m) / cons.med > 0.08) {
+        warnings.push('FC: la riga del ritmo (' + Math.round(60000 / m) + '/min) non concorda con i QRS sincroni delle altre derivazioni (' + Math.round(60000 / cons.med) + '/min): proposta la seconda, verificala sul tracciato.');
+        m = cons.med; useRR = clean(cons.rr); if (useRR.length < 2) useRR = cons.rr;
+      }
       const pr = pInfo && pInfo.pPresenti ? pInfo.pr : null;
       rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pr, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
     }
@@ -1011,9 +1253,23 @@
       if (sp('R')) { L.rLim = true; L.rVar = true; } if (sp('S')) { L.sLim = true; L.sVar = true; }
       if (L.rVar || L.sVar) warnings.push('Derivazione ' + k + ': ' + (L.rVar ? 'R' : '') + (L.rVar && L.sVar ? ' e ' : '') + (L.sVar ? 'S' : '') + ' molto diverse da battito a battito: valore incerto, verificalo sul tracciato.');
     });
+    const stBad = [];
+    // 1.4.0: INDICE DI AFFIDABILITÀ DELLO ST per derivazione: ≥ 3 battiti completi e dispersione (scarto
+    // interquartile) di J e J+60 ≤ 0,5 mm; altrimenti lo ST non viene proposto (n.m.)
+    Object.keys(leads).forEach(k => {
+      const L = leads[k]; if (L.unrel || L.stLim) return;
+      const bb = L.beats.filter(bt => bt.complete && bt.st != null && isFinite(bt.st));
+      const iqr = q => { const v = bb.map(bt => bt[q]).filter(x => x != null && isFinite(x)); return v.length >= 3 ? pctl(v, 0.75) - pctl(v, 0.25) : null; };
+      const d0 = iqr('st'), d6 = iqr('st60');
+      L.stRel = bb.length >= 3 && d0 !== null && d0 <= 0.5 && (d6 === null || d6 <= 0.6);
+      if (!L.stRel) { L.stLim = true; L.stDisp = d0; stBad.push(k); }
+    });
+    if (stBad.length) warnings.push('ST non proposto in ' + stBad.join(', ') + ': valori di J/J+60 incoerenti tra i battiti o battiti insufficienti (misuralo con lo strumento «ST»).');
     const qrsAll = Object.values(leads).filter(l => !l.unrel).map(l => l.qrs).filter(v => v);
     const qtT = Object.keys(leads).filter(k => leads[k].qt && leads[k].T !== null && Math.abs(leads[k].T) >= 1.5).map(k => leads[k].qt);
     const qtAll = qtT.length >= 3 ? qtT : Object.values(leads).map(l => l.qt).filter(v => v);
+    // durata globale del QRS dalle derivazioni simultanee: calcolata (cons.beats) ma non ancora applicata
+    // (dispersione elevata sulle foto reali: in valutazione per la 1.4.1)
     const glob = { qrs: qrsAll.length ? S.pct(qrsAll, 0.75) : null, qt: qtAll.length ? median(qtAll) : null, pr: rhythm ? rhythm.pr : null, p: rhythm ? rhythm.pDur : null };
     if (limLeads.length) warnings.push('Tracce sovrapposte alla riga vicina in ' + limLeads.join(', ') + ': ampiezza misurata fino al punto di contatto (di norma un valore minimo, «≥», da verificare). Trascina il punto dell\'apice sul tracciato o misura con lo strumento «Onda R».');
     if (rhythm && rhythm.hr > 120 && glob.qt) warnings.push('FC > 120/min: la P successiva può sovrapporsi alla fine della T e far sovrastimare il QT (fino a ~30 ms): verifica il QT manualmente.');
@@ -1030,7 +1286,9 @@
     let leadsUnreliable = null;
     if (rows.length < prof.righe) leadsUnreliable = 'trovate ' + rows.length + ' righe su ' + prof.righe + ': l\'assegnazione delle derivazioni non è sicura';
     else {
-      const net = k => { const L = leads[k]; return !L || L.unrel || L.R == null ? null : L.R - Math.abs(L.S || 0); };
+      // 1.4.0: le derivazioni con ampiezze già segnalate come incerte (R/S variabili, tracce fuse) non entrano nel
+      // controllo (un valore incerto non deve far scartare tutte le derivazioni)
+      const net = k => { const L = leads[k]; return !L || L.unrel || L.R == null || L.rVar || L.sVar ? null : L.R - Math.abs(L.S || 0); };
       const v = { I: net('I'), II: net('II'), III: net('III'), aVR: net('aVR'), aVL: net('aVL'), aVF: net('aVF') };
       const ids = [[['II', 'I', 'III'], () => v.II - v.I - v.III], [['aVR', 'aVL', 'aVF'], () => v.aVR + v.aVL + v.aVF], [['aVR', 'I', 'II'], () => v.aVR + (v.I + v.II) / 2], [['aVL', 'I', 'III'], () => v.aVL - (v.I - v.III) / 2], [['aVF', 'II', 'III'], () => v.aVF - (v.II + v.III) / 2]];
       let nEv = 0, nKo = 0;
@@ -1040,7 +1298,7 @@
     if (leadsUnreliable) warnings.unshift('DERIVAZIONI NON AFFIDABILI: ' + leadsUnreliable + '. Ampiezze, ST e asse dalla foto NON vengono proposti (solo FC e ritmo): rifai la foto con il foglio ben piatto (senza fogli sovrapposti) oppure misura con gli strumenti.');
 
     // 9) indice di qualità
-    const sh = sharpness(ch, dk.thr);
+    const sh = sharpness(chS, dkS.thr);
     const sharpN0 = sh.contrast > 0 ? sh.edge / sh.contrast * (7 / pxmm) : 0; // indipendente da risoluzione e contrasto
     // 1.3.0: nitidezza direzionale (foto mossa: bordi persi in una sola direzione)
     const sharpD = sh.contrast > 0 ? Math.min(sh.ex, sh.ey) / sh.contrast * (7 / pxmm) : 0;
@@ -1073,7 +1331,8 @@
       digital, gridColor: GRID, upscale: upK,
       speed, gain, layout: profKey === 'auto' ? 'auto: ' + prof.nome : prof.nome, rows: rows.length,
       leads, rhythm, glob, overlay, warnings, leadsUnreliable, machine: {}, textLines: [], rect, ms: Date.now() - t0,
-      debug: opts.debug ? { dm: opts.debug === 2 ? dm : undefined, W: outW, H: outH, rows: rows.map(r => ({ y: r.y, th: r.th, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
+      decurve: dc ? { applied: !!dc.applied, dev: +dc.dev.toFixed(1), n: dc.n, hv: hu ? +(hu.vari * 100).toFixed(1) : null } : null,
+      debug: opts.debug ? { dc: dc && dc.tracks, dm: opts.debug === 2 ? dm : undefined, W: outW, H: outH, rows: rows.map(r => ({ y: r.y, th: r.th, pts: r.pts.filter((p, i) => i % 2 === 0) })), pulses: pulses.map(o => o.p), segs, dkThr: dk.thr, pulsesL, pulsesR, ori } : undefined
     };
 
     function fail(msg) { return { ok: false, source: 'foto', quality: { score: 0, level: 'insufficiente', items: [] }, warnings: [msg], leads: {}, overlay: [], machine: {}, textLines: [], glob: {}, rhythm: null, ms: Date.now() - t0 }; }

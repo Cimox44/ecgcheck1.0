@@ -410,8 +410,8 @@
     renderReport();
     const s = state.result.sintesi;
     const chip = $('#statusChip');
-    chip.className = 'chip ' + (s.omi === 'positivo' ? 'crit' : s.omi === 'NSTEMI ad alto rischio' ? 'alto' : s.omi === 'negativo' ? 'norm' : '');
-    chip.textContent = 'OMI: ' + (s.omi === 'NSTEMI ad alto rischio' ? 'NSTEMI AR' : s.omi) + (state.data.fotoDaVerificare ? ' (da verificare)' : '');
+    chip.className = 'chip ' + (s.omi === 'positivo' ? 'crit' : s.omi === 'NSTEMI ad alto rischio' || /^sospetto/.test(s.omi) ? 'alto' : s.omi === 'negativo' ? 'norm' : '');
+    chip.textContent = 'OMI: ' + (s.omi === 'NSTEMI ad alto rischio' ? 'NSTEMI AR' : /^sospetto/.test(s.omi) ? 'sospetto' : s.omi) + (state.data.fotoDaVerificare ? ' (da verificare)' : '');
     const b = $('#critBadge'); b.textContent = s.critici; b.classList.toggle('hidden', !s.critici);
   }
   function persist() {
@@ -425,7 +425,8 @@
     'positivo': ['omi-pos', 'OMI / STEMI(-equivalente) RILEVATO', 'Pattern di occlusione coronarica acuta: valutare attivazione immediata del percorso STEMI.'],
     'NSTEMI ad alto rischio': ['omi-nst', 'NSTEMI AD ALTO RISCHIO', 'Ischemia subendocardica o riperfusione (Wellens): strategia invasiva precoce.'],
     'negativo': ['omi-neg', 'NESSUN SEGNO DI OMI', 'Nessun criterio di occlusione nelle derivazioni inserite. Non esclude SCA: troponina ed ECG seriati.'],
-    'non valutabile': ['omi-nv', 'OMI NON VALUTABILE', 'Inserisci il tratto ST di almeno 10 derivazioni (scheda Derivazioni).']
+    'non valutabile': ['omi-nv', 'OMI NON VALUTABILE', 'Inserisci il tratto ST di almeno 10 derivazioni (scheda Derivazioni).'],
+    'sospetto (da verificare)': ['omi-nst', 'OMI SOSPETTO – DA VERIFICARE', 'Criteri OMI/STEMI soddisfatti da valori letti automaticamente dalla foto e non ancora verificati: misura J e J+60 con lo strumento «ST» nelle derivazioni indicate, inserisci le misure stampate (QRS) e conferma. Se la clinica è suggestiva non attendere: ECG ripetuto e valutazione medica immediata.']
   };
   function measureRows(m, d) {
     const rows = [
@@ -541,6 +542,7 @@
     drawPair(state.misPts, '#d946ef', lw, fs, true);
     drawGuide(lw, fs);
     drawApex(lw, fs);
+    drawCal2(lw, fs);
     void H;
   }
   function drawPair(pts, col, lw, fs, label) {
@@ -570,13 +572,15 @@
       const [a, b] = Array.from(ptrs.values());
       gest = { type: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), s0: state.v.s, m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, tx0: state.v.tx, ty0: state.v.ty };
     } else {
-      const h = (state.mode === 'pan' || state.mode === 'mis') && hitApex(p);
-      gest = h ? { type: 'drag', h, p0: p } : { type: 'tap', p0: p, tx0: state.v.tx, ty0: state.v.ty };
+      const c2 = state.mode === 'cal2' && hitCal2(p);
+      const h = !c2 && (state.mode === 'pan' || state.mode === 'mis') && hitApex(p);
+      gest = c2 ? { type: 'cal2', part: c2, p0: p, start: Object.assign({}, state.cal2) } : h ? { type: 'drag', h, p0: p } : { type: 'tap', p0: p, tx0: state.v.tx, ty0: state.v.ty };
     }
   });
   cv.addEventListener('pointermove', e => {
     if (!ptrs.has(e.pointerId) || !gest) return;
     const p = pos(e); ptrs.set(e.pointerId, p);
+    if (gest.type === 'cal2') { moveCal2(gest.part, gest.start, p.x - gest.p0.x, p.y - gest.p0.y); gest.moved = true; draw(); const r = $('#c2res'); if (r) { const V = cal2Vals(); if (V) r.innerHTML = 'Δt <b>' + fmt(V.ms) + ' ms</b> (' + fmt(V.mmT, 1) + ' mm) · <b>' + fmt(V.hr) + '/min</b>' + (state.cal2.horiz ? ' · ampiezza <b>' + fmt(V.mm, 1) + ' mm</b> = ' + fmt(V.mv, 2) + ' mV' : ''); } return; }
     if (gest.type === 'drag') {
       const v = state.v, ix = (p.x - v.tx) / v.s, iy = (p.y - v.ty) / v.s, o = gest.h.o;
       if (gest.h.part === 'apex') { o.x = ix; o.y = iy; } else { o.bx = ix; o.by = iy; }
@@ -602,6 +606,7 @@
     ptrs.delete(e.pointerId);
     if (gest && gest.type === 'tap' && ptrs.size === 0 && e.type === 'pointerup') onTap(p);
     if (gest && gest.type === 'drag' && gest.moved && pxPerMm()) applyApexDrag(gest.h.o, gest.h.part);
+    if (gest && gest.type === 'cal2') renderPanel();
     if (ptrs.size === 0) gest = null;
     else if (gest && gest.type === 'pinch') gest = { type: 'none' };
   }
@@ -626,6 +631,7 @@
     if (m !== 'cal' && !pxPerMm()) { toast('Prima calibra sulla griglia'); setMode('cal'); return; }
     if (m === 'cal') { if (state.calPts.length >= 2) state.calPts = []; state.calPts.push(ip); }
     else if (m === 'mis') { if (state.misPts.length >= 2) state.misPts = []; state.misPts.push(ip); }
+    else if (m === 'cal2' && state.cal2) { const c = state.cal2; if (Math.abs(ip.x - c.x1) <= Math.abs(ip.x - c.x2)) c.x1 = ip.x; else c.x2 = ip.x; }
     else if (m === 'r') state.rMarks.push(ip);
     else if (m === 'p') state.pMarks.push(ip);
     else if (GUIDE[m]) { if (state.gPts.length >= GUIDE[m].steps.length) state.gPts = []; state.gPts.push(ip); }
@@ -636,8 +642,9 @@
   function setMode(m) {
     if (m !== state.mode) state.gPts = [];
     state.mode = m;
+    if (m === 'cal2' && !state.cal2) cal2Init();
     $$('#toolbar .tool').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
-    renderPanel();
+    renderPanel(); draw();
   }
   $('#toolbar').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
   $('#zoomIn').onclick = () => { const r = cv.getBoundingClientRect(); zoomAt({ x: r.width / 2, y: r.height / 2 }, 1.3); };
@@ -648,7 +655,7 @@
     if (!state.img) return;
     const src = state.img; const c = document.createElement('canvas'); c.width = src.height; c.height = src.width;
     const x = c.getContext('2d'); x.translate(c.width, 0); x.rotate(Math.PI / 2); x.drawImage(src, 0, 0);
-    state.img = c; state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = []; state.overlay = [];
+    state.img = c; state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = []; state.cal2 = null; state.overlay = [];
     state.imgUrl = c.toDataURL('image/jpeg', 0.88); storeImage();
     toast('Immagine ruotata solo nella visualizzazione (la lettura automatica non cambia): se il tracciato è letto capovolto usa «🔃 Rileggi ruotato di 180°» nella scheda della lettura automatica.', 6000);
     fit(); renderPanel(); renderReport();
@@ -658,10 +665,151 @@
   };
   $('#clearBtn').onclick = () => {
     const k = GUIDE[state.mode] ? 'gPts' : { cal: 'calPts', mis: 'misPts', r: 'rMarks', p: 'pMarks' }[state.mode];
-    if (k) state[k] = []; else { state.misPts = []; state.rMarks = []; state.pMarks = []; state.gPts = []; }
+    if (k) state[k] = []; else { state.misPts = []; state.rMarks = []; state.pMarks = []; state.cal2 = null; state.gPts = []; }
     draw(); renderPanel(); persist();
   };
 
+  /* =====================================================================
+     1.4.0 – CALIBRO MOBILE (due linee verticali trascinabili, singolarmente o come coppia rigida;
+     a richiesta due linee orizzontali per le ampiezze) con MARCIA (march-out): l'intervallo fissato si
+     ripete lungo il tracciato come linee "fantasma" a passi uguali → regolarità di RR/PP, P nascoste
+     nella T, P bloccate, Wenckebach, dissociazione AV. Calibrato dalla griglia/impulso (lettura
+     automatica) o dal calibro manuale. Maniglie ≥ 44 px sullo schermo.
+     ===================================================================== */
+  const HANDLE = 22; // raggio in px sullo schermo (diametro 44)
+  function cal2Init() {
+    if (!state.img) return;
+    const r = cv.getBoundingClientRect(), v = state.v;
+    const cx = (r.width / 2 - v.tx) / v.s, cy = (r.height / 2 - v.ty) / v.s;
+    const ppm = pxPerMm() || 8;
+    const rr = rrNow(); const w = (rr ? rr / msPerMm() : 20) * ppm;
+    state.cal2 = Object.assign({ x1: cx - w / 2, x2: cx + w / 2, y1: cy - 5 * ppm, y2: cy + 5 * ppm, horiz: false, march: false, series: { RR: [], PP: [] }, kind: 'RR' }, state.cal2 && state.cal2.series ? { series: state.cal2.series, kind: state.cal2.kind } : {});
+  }
+  function cal2Vals() {
+    const c = state.cal2; if (!c || !pxPerMm()) return null;
+    const ms = toMs(c.x2 - c.x1), mm = Math.abs(toMm(c.y2 - c.y1));
+    return { ms, mm, mv: mm / 10, hr: ms > 0 ? 60000 / ms : null, mmT: Math.abs(c.x2 - c.x1) / pxPerMm() };
+  }
+  function drawCal2(lw, fs) {
+    const c = state.cal2; if (state.mode !== 'cal2' || !c || !state.img) return;
+    const v = state.v, r = cv.getBoundingClientRect();
+    const top = (0 - v.ty) / v.s, bot = (r.height - v.ty) / v.s, left = (0 - v.tx) / v.s, right = (r.width - v.tx) / v.s;
+    const hy = (r.height - HANDLE - 8 - v.ty) / v.s, hr = HANDLE / v.s;
+    const d = c.x2 - c.x1;
+    // marcia: linee fantasma a passi uguali
+    if (c.march && Math.abs(d) > 2) {
+      g.strokeStyle = 'rgba(217,70,239,.55)'; g.lineWidth = lw; g.setLineDash([6 * lw, 6 * lw]);
+      const k0 = Math.floor((left - c.x1) / d) - 1, k1 = Math.ceil((right - c.x1) / d) + 1;
+      for (let k = Math.max(-400, Math.min(k0, k1)); k <= Math.min(400, Math.max(k0, k1)); k++) { if (k === 0 || k === 1) continue; const x = c.x1 + k * d; g.beginPath(); g.moveTo(x, top); g.lineTo(x, bot); g.stroke(); }
+      g.setLineDash([]);
+    }
+    // fascia tra le linee
+    g.fillStyle = 'rgba(217,70,239,.08)'; g.fillRect(Math.min(c.x1, c.x2), top, Math.abs(d), bot - top);
+    g.strokeStyle = '#d946ef'; g.lineWidth = 2 * lw;
+    [c.x1, c.x2].forEach(x => { g.beginPath(); g.moveTo(x, top); g.lineTo(x, bot); g.stroke(); });
+    // maniglie (cerchi) e maniglia della coppia (rettangolo al centro)
+    g.fillStyle = 'rgba(217,70,239,.85)';
+    [c.x1, c.x2].forEach(x => { g.beginPath(); g.arc(x, hy, hr, 0, Math.PI * 2); g.fill(); });
+    const mx = (c.x1 + c.x2) / 2;
+    g.fillStyle = 'rgba(124,58,237,.85)'; g.fillRect(mx - hr, hy - hr * 0.7, hr * 2, hr * 1.4);
+    g.fillStyle = '#fff'; g.font = '700 ' + (13 / v.s) + 'px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('⇔', mx, hy); g.fillText('1', c.x1, hy); g.fillText('2', c.x2, hy);
+    g.textAlign = 'start'; g.textBaseline = 'alphabetic';
+    if (c.horiz) {
+      const hx = (HANDLE + 8 - v.tx) / v.s;
+      g.strokeStyle = '#0ea5e9'; g.lineWidth = 2 * lw;
+      [c.y1, c.y2].forEach(y => { g.beginPath(); g.moveTo(left, y); g.lineTo(right, y); g.stroke(); });
+      g.fillStyle = 'rgba(14,165,233,.85)'; [c.y1, c.y2].forEach(y => { g.beginPath(); g.arc(hx, y, hr, 0, Math.PI * 2); g.fill(); });
+      const mh = (c.y1 + c.y2) / 2; g.fillStyle = 'rgba(3,105,161,.85)'; g.fillRect(hx - hr * 0.7, mh - hr, hr * 1.4, hr * 2);
+    }
+    const V = cal2Vals();
+    if (V) {
+      const txt = fmt(V.ms) + ' ms · ' + fmt(V.hr) + '/min' + (c.horiz ? ' · ' + fmt(V.mm, 1) + ' mm (' + fmt(V.mv, 2) + ' mV)' : '');
+      g.font = '700 ' + (15 / v.s) + 'px system-ui, sans-serif';
+      const tw = g.measureText(txt).width, tx = Math.max(left + 4 / v.s, Math.min(mx - tw / 2, right - tw - 4 / v.s)), ty = top + 24 / v.s;
+      g.fillStyle = 'rgba(255,255,255,.88)'; g.fillRect(tx - 4 / v.s, ty - 17 / v.s, tw + 8 / v.s, 23 / v.s);
+      g.fillStyle = '#86198f'; g.fillText(txt, tx, ty);
+    }
+  }
+  // individua la parte del calibro sotto il dito (coordinate dello schermo)
+  function hitCal2(p) {
+    const c = state.cal2; if (state.mode !== 'cal2' || !c) return null;
+    const v = state.v, r = cv.getBoundingClientRect();
+    const sx = x => x * v.s + v.tx, sy = y => y * v.s + v.ty;
+    const hyS = r.height - HANDLE - 8;
+    const near = (a, b) => Math.abs(a - b) <= HANDLE;
+    const mx = (sx(c.x1) + sx(c.x2)) / 2;
+    if (near(p.y, hyS)) {
+      if (Math.abs(p.x - mx) <= HANDLE && Math.abs(sx(c.x2) - sx(c.x1)) > HANDLE * 1.2) return 'pair';
+      if (near(p.x, sx(c.x1))) return 'x1';
+      if (near(p.x, sx(c.x2))) return 'x2';
+      if (Math.abs(p.x - mx) <= HANDLE) return 'pair';
+    }
+    if (c.horiz && near(p.x, HANDLE + 8)) {
+      const mh = (sy(c.y1) + sy(c.y2)) / 2;
+      if (near(p.y, sy(c.y1)) && Math.abs(sy(c.y2) - sy(c.y1)) > HANDLE) return 'y1';
+      if (near(p.y, sy(c.y2)) && Math.abs(sy(c.y2) - sy(c.y1)) > HANDLE) return 'y2';
+      if (Math.abs(p.y - mh) <= HANDLE) return 'hpair';
+      if (near(p.y, sy(c.y1))) return 'y1';
+      if (near(p.y, sy(c.y2))) return 'y2';
+    }
+    // le linee stesse (tolleranza ridotta per non impedire lo spostamento del tracciato)
+    if (Math.abs(p.x - sx(c.x1)) <= 12) return 'x1';
+    if (Math.abs(p.x - sx(c.x2)) <= 12) return 'x2';
+    if (c.horiz && Math.abs(p.y - sy(c.y1)) <= 12) return 'y1';
+    if (c.horiz && Math.abs(p.y - sy(c.y2)) <= 12) return 'y2';
+    return null;
+  }
+  function moveCal2(part, start, dx, dy) {
+    const c = state.cal2, s = state.v.s;
+    if (part === 'x1') c.x1 = start.x1 + dx / s;
+    else if (part === 'x2') c.x2 = start.x2 + dx / s;
+    else if (part === 'pair') { c.x1 = start.x1 + dx / s; c.x2 = start.x2 + dx / s; }
+    else if (part === 'y1') c.y1 = start.y1 + dy / s;
+    else if (part === 'y2') c.y2 = start.y2 + dy / s;
+    else if (part === 'hpair') { c.y1 = start.y1 + dy / s; c.y2 = start.y2 + dy / s; }
+  }
+  function seriesStats(a) {
+    if (!a.length) return null;
+    const mean = a.reduce((x, y) => x + y, 0) / a.length, mn = Math.min.apply(null, a), mx = Math.max.apply(null, a);
+    return { n: a.length, mean, mn, mx, var: mx - mn, irr: a.length >= 3 && mx - mn > Math.max(120, 0.15 * mean) };
+  }
+  function renderCal2(P) {
+    if (!pxPerMm()) { P.innerHTML = '<div class="hint">Calibro mobile: serve la calibrazione. Carica una foto/PDF letto automaticamente oppure usa <b>Calibra</b> sulla griglia.</div>'; return; }
+    if (!state.cal2) cal2Init();
+    const c = state.cal2, V = cal2Vals();
+    let h = '<div class="res" id="c2res">Δt <b>' + fmt(V.ms) + ' ms</b> (' + fmt(V.mmT, 1) + ' mm) · <b>' + fmt(V.hr) + '/min</b>' + (c.horiz ? ' · ampiezza <b>' + fmt(V.mm, 1) + ' mm</b> = ' + fmt(V.mv, 2) + ' mV' : '') + '</div>';
+    h += '<div class="actions"><button class="btn sm' + (c.march ? ' primary' : '') + '" id="c2march">' + (c.march ? '✔ ' : '') + 'Marcia</button><button class="btn sm' + (c.horiz ? ' primary' : '') + '" id="c2horiz">' + (c.horiz ? '✔ ' : '') + 'Linee orizzontali</button><button class="btn sm" id="c2center">Centra</button><button class="btn sm" id="c2help">❓ Come si usa</button></div>';
+    h += '<div class="actions"><button class="btn sm" data-c2use="RR">Usa come RR</button><button class="btn sm" data-c2use="PP">Usa come PP</button><button class="btn sm" data-c2use="PR">PR</button><button class="btn sm" data-c2use="QRS">QRS</button><button class="btn sm" data-c2use="QT">QT</button>' + (c.horiz ? '<button class="btn sm" id="c2amp">Ampiezza → Derivazioni</button>' : '') + '</div>';
+    const st = seriesStats(c.series[c.kind]);
+    h += '<div class="gl-row"><select id="c2kind" aria-label="Serie">' + ['RR', 'PP'].map(k => '<option' + (k === c.kind ? ' selected' : '') + '>' + k + '</option>').join('') + '</select><button class="btn sm" id="c2add">＋ Aggiungi battito alla serie</button><button class="btn sm" id="c2reset">Azzera</button></div>';
+    if (st) h += '<div class="hint" id="c2stats">Serie ' + c.kind + ': n = ' + st.n + ' · media ' + fmt(st.mean) + ' ms (' + fmt(60000 / st.mean) + '/min) · min ' + fmt(st.mn) + ' – max ' + fmt(st.mx) + ' · variabilità ' + fmt(st.var) + ' ms' + (st.n >= 3 ? ' → <b>' + (st.irr ? 'irregolare' : 'regolare') + '</b>' : '') + ' <button class="btn sm primary" id="c2apply">Applica media</button></div>';
+    h += '<div id="c2helpBox" class="hint hidden">' + CAL2_HELP + '</div>';
+    P.innerHTML = h;
+    $('#c2march').onclick = () => { c.march = !c.march; draw(); renderPanel(); };
+    $('#c2horiz').onclick = () => { c.horiz = !c.horiz; draw(); renderPanel(); };
+    $('#c2center').onclick = () => { const s = c.series; state.cal2 = null; cal2Init(); state.cal2.series = s; draw(); renderPanel(); };
+    $('#c2help').onclick = () => $('#c2helpBox').classList.toggle('hidden');
+    $('#c2kind').onchange = e => { c.kind = e.target.value; renderPanel(); };
+    $('#c2add').onclick = () => { c.series[c.kind].push(Math.round(V.ms)); toast(c.kind + ' ' + Math.round(V.ms) + ' ms aggiunto (sposta la coppia sul battito successivo)'); renderPanel(); };
+    $('#c2reset').onclick = () => { c.series[c.kind] = []; renderPanel(); };
+    const ca = $('#c2apply'); if (ca) ca.onclick = () => {
+      const s = seriesStats(c.series[c.kind]);
+      if (c.kind === 'RR') { state.data.ritmo.rrList = c.series.RR.slice(); cal2Set('ritmo.rr', s.mean); cal2Set('ritmo.fc', 60000 / s.mean); if (s.n >= 3) setField('ritmo.regolarita', s.irr ? 'irregolare' : 'regolare'); }
+      else { state.data.ritmo.ppList = c.series.PP.slice(); cal2Set('ritmo.pp', s.mean); cal2Set('ritmo.fcAtriale', 60000 / s.mean); }
+      toast('Media ' + c.kind + ' applicata nella scheda Ritmo (valore manuale)');
+    };
+    P.querySelectorAll('[data-c2use]').forEach(b => b.onclick = () => {
+      const k = b.dataset.c2use, ms = V.ms;
+      if (k === 'RR') { cal2Set('ritmo.rr', ms); cal2Set('ritmo.fc', 60000 / ms); }
+      else if (k === 'PP') { cal2Set('ritmo.pp', ms); cal2Set('ritmo.fcAtriale', 60000 / ms); }
+      else cal2Set('intervalli.' + k.toLowerCase(), ms);
+      toast(k + ' = ' + Math.round(ms) + ' ms inserito come valore manuale');
+    });
+    const am = $('#c2amp'); if (am) am.onclick = () => { setMode('mis'); state.misPts = [{ x: c.x1, y: c.y1 }, { x: c.x1, y: c.y2 }]; draw(); renderPanel(); toast('Scegli la derivazione e l\'onda e premi «Assegna»'); };
+  }
+  function cal2Set(p, v) { setField(p, String(Math.round(v))); markManual(p); }
+  const CAL2_HELP = '<b>Come si usa il calibro mobile</b><ol><li>Le due linee viola compaiono al centro del tracciato. Trascina la maniglia <b>1</b> o <b>2</b> (in basso) per spostare una linea; trascina la maniglia <b>⇔</b> al centro per spostare la <b>coppia rigida</b> (intervallo invariato).</li><li>Il riquadro in alto mostra subito l\'intervallo in ms e mm e la frequenza corrispondente (/min). Con «Linee orizzontali» compaiono due linee azzurre (maniglie a sinistra) per l\'ampiezza in mm e mV (secondo il guadagno).</li><li><b>Marcia</b>: fissa un intervallo (es. un RR o un PP) e attiva «Marcia»: l\'intervallo si ripete lungo il tracciato con linee tratteggiate. Trascina la coppia per far scorrere la marcia: se le P (o le R) cadono tutte sulle linee il ritmo è regolare; una P sulla linea dentro la T = P nascosta; una P «in più» non seguita dal QRS = P bloccata; PR che si allunga fino a un QRS mancante = Wenckebach; pausa = multiplo esatto del PP → blocco SA; P regolari che «scorrono» indipendenti dai QRS = dissociazione AV.</li><li>«Usa come RR/PP/PR/QRS/QT» inserisce il valore nella scheda Ritmo come valore manuale (prevale sulla lettura automatica). Per la regolarità: scegli RR o PP, premi «＋ Aggiungi battito» su più battiti consecutivi (sposta la coppia), poi «Applica media» (media, min, max, variabilità; irregolare se la variabilità supera 120 ms o il 15% della media).</li><li>Funziona con zoom e spostamento: ingrandisci con due dita per posizionare con precisione. La calibrazione viene dalla griglia/impulso della lettura automatica o dal calibro manuale («Calibra»).</li></ol>';
   /* =====================================================================
      1.3.0 – STRUMENTI DI MISURA GUIDATA (PR, QRS, onda R/P/Q/S/T, ST, QT, PP, RR, RP)
      ===================================================================== */
@@ -839,6 +987,7 @@
     const P = $('#toolPanel'); const m = state.mode;
     if (!state.img) { P.innerHTML = GUIDE[m] ? '<div class="hint">Carica una foto o un PDF dell\'ECG per usare lo strumento ' + GUIDE[m].nome + '.</div>' : ''; return; }
     if (GUIDE[m]) return renderGuide(P, m);
+    if (m === 'cal2') return renderCal2(P);
     if (m === 'pan') { P.innerHTML = '<div class="hint">Trascina per spostare, pizzica per ingrandire. Seleziona uno strumento per misurare.</div>'; return; }
     if (m === 'cal') {
       let h = '<div class="hint"><b>Calibrazione:</b> tocca due punti della griglia a distanza nota (es. 5 quadrati grandi = 25 mm in orizzontale, oppure il segnale di taratura da 10 mm). Ingrandisci per precisione.</div>';
@@ -976,10 +1125,15 @@
     if (A.numPages > 1) h += '<div class="actions">' + Array.from({ length: Math.min(A.numPages, 6) }, (_, i) => '<button class="btn sm' + (i + 1 === A.page ? ' primary' : '') + '" data-pdfpage="' + (i + 1) + '">Pagina ' + (i + 1) + '</button>').join('') + '</div>';
     if (A.warnings.length) h += '<div class="disclaimer">' + A.warnings.map(esc).join('<br>') + '</div>';
     if (A.ok) {
-      const row = (lab, tr, mc, u) => '<tr><td>' + lab + '</td><td>' + (tr == null ? '—' : fmt(tr) + (u || '')) + '</td>' + (photo ? '' : '<td>' + (mc == null ? '—' : fmt(mc) + (u || '')) + '</td>') + '</tr>';
-      h += '<h4>Misure</h4><table class="meas auto"><tr><td></td><td><b>' + (photo ? 'Dalla foto' : 'Traccia') + '</b></td>' + (photo ? '' : '<td><b>Elettrocardiografo</b></td>') + '</tr>' +
-        row('FC', R && R.hr, M.fc, ' /min') + row(photo ? 'PR (dalla foto: da verificare' + (R && R.pPresenti ? ')' : ', non applicato)') : 'PR', G.pr, M.pr, ' ms') + row('QRS', G.qrs, M.qrs, ' ms') + row('QT', G.qt, M.qt, ' ms') +
-        row('QTc', null, M.qtc, ' ms') + row('Asse QRS', A.leadsUnreliable ? null : G.asse, M.assi && M.assi.qrs, '°') + row(photo ? 'Durata P (indicativa, non applicata)' : 'Durata P', G.p, M.p, ' ms') + '</table>';
+      // 1.4.0: con le misure stampate inserite la colonna «Stampate» mostra il confronto (differenze evidenziate)
+      const SP = state.data.stampate || {}; const sp = k => num(SP[k]);
+      const showSp = photo && STAMP_F.some(f => sp(f[0]) != null);
+      const tolOf = { ' /min': 3, ' ms': 20, '°': 20 };
+      const row = (lab, tr, mc, u) => { const off = mc != null && tr != null && Math.abs(tr - mc) > (tolOf[u] || 20); return '<tr><td>' + lab + '</td><td' + (off ? ' class="lim" title="differenza dal valore stampato"' : '') + '>' + (tr == null ? '—' : fmt(tr) + (u || '')) + '</td>' + (photo && !showSp ? '' : '<td>' + (mc == null ? '—' : fmt(mc) + (u || '')) + '</td>') + '</tr>'; };
+      const Mx = showSp ? { fc: sp('fc'), pr: sp('pr'), qrs: sp('qrs'), qt: sp('qt'), qtc: sp('qtc'), assi: { qrs: sp('ar') }, p: null } : M;
+      h += '<h4>Misure</h4><table class="meas auto"><tr><td></td><td><b>' + (photo ? 'Dalla foto' : 'Traccia') + '</b></td>' + (photo && !showSp ? '' : '<td><b>' + (showSp ? 'Stampate' : 'Elettrocardiografo') + '</b></td>') + '</tr>' +
+        row('FC', R && R.hr, Mx.fc, ' /min') + row(photo ? 'PR (dalla foto: da verificare' + (R && R.pPresenti ? ')' : ', non applicato)') : 'PR', G.pr, Mx.pr, ' ms') + row('QRS', G.qrs, Mx.qrs, ' ms') + row('QT', G.qt, Mx.qt, ' ms') +
+        row('QTc', null, Mx.qtc, ' ms') + row('Asse QRS', A.leadsUnreliable ? null : G.asse, Mx.assi && Mx.assi.qrs, '°') + row(photo ? 'Durata P (indicativa, non applicata)' : 'Durata P', G.p, Mx.p, ' ms') + '</table>';
       if (photo && G.qrs != null && G.qrs >= 120) h += '<div class="disclaimer">QRS ' + fmt(G.qrs) + ' ms letto dalla foto: nei tracciati con voltaggi alti o tracce sovrapposte la foto tende a sovrastimarlo. Confrontalo con il valore stampato prima di applicarlo.</div>';
       if (R) h += '<p class="hint">Ritmo (' + esc(R.lead) + '): RR medio ' + fmt(R.rrMean) + ' ms, variabilità ' + fmt(R.rrVar) + ' ms → ' + (isIrregular(R) ? '<b>irregolare</b>' : 'regolare') + '; onde P ' + (R.pPresenti ? 'riconosciute prima di ogni QRS (PR ' + fmt(R.pr) + ' ms)' : '<b>non riconosciute</b> con certezza') + '.</p>';
       const man = state.data.manual || {};
@@ -989,7 +1143,7 @@
       const pdl = ['I', 'II', 'aVF', 'V2', 'V3', 'V4', 'V5', 'V6'].filter(k => A.prDep && A.prDep[k] != null && A.prDep[k] <= -0.4);
       if (pdl.length >= 3) h += '<div class="disclaimer"><b>PR sottoslivellato</b> rispetto al tratto TP in ' + pdl.map(k => k + ' ' + fmt(A.prDep[k], 1)).join(', ') + ' mm' + (A.prDep.aVR >= 0.3 ? '; PR sopraslivellato in aVR +' + fmt(A.prDep.aVR, 1) + ' mm' : '') + ': segno a favore di pericardite, proposto nella scheda Pattern (verifica). ST rispetto al TP: ' + C.LEADS.filter(k => A.leads[k] && A.leads[k].stTP != null).map(k => k + ' ' + fmt(A.leads[k].stTP, 1)).join(', ') + ' mm.</div>';
       h += '<p class="hint">Sul tracciato: <span style="color:#16a34a">▬ ■</span> linea di base, <span style="color:#f76b15">●</span> punto J, <span style="color:#e5484d">◆</span> apice della R e <span style="color:#2b6cdf">◆</span> nadir della S usati per le ampiezze (<b>trascinali</b> con il dito per correggerli: il valore viene aggiornato e registrato come correzione manuale), <span style="color:#e5484d">|</span> onde R della striscia del ritmo.</p>';
-      if (photo) h += '<p class="hint">Le misure stampate dall\'elettrocardiografo (FC, PR, QRS, QT/QTc, assi) restano le più affidabili: se le leggi sul foglio, inseriscile nella scheda Ritmo. Con voltaggi molto alti (QRS che invadono la riga vicina, tipico dell\'IVS) R e S non sono misurabili dalla foto: misurale con il calibro.</p>';
+      if (photo) h += '<p class="hint">Le misure stampate dall\'elettrocardiografo (FC, PR, QRS, QT/QTc, assi) restano le più affidabili: se le leggi sul foglio, inseriscile nel riquadro «Misure stampate» qui sotto (prevalgono sulla foto). Con voltaggi molto alti (QRS che invadono la riga vicina, tipico dell\'IVS) R e S non sono misurabili dalla foto: misurale con il calibro.</p>';
       h += '<div class="actions"><button class="btn primary" id="autoApply">✅ Applica tutti i valori</button><button class="btn" id="autoApplyLeads">Applica solo le derivazioni</button></div>';
     }
     h += '<div class="actions"><button class="btn sm" id="reportBad">📨 Segnala una lettura errata</button></div>';
@@ -1012,6 +1166,45 @@
     };
     const rb = $('#reportBad'); if (rb) rb.onclick = exportCaseReport;
     const al = $('#autoApplyLeads'); if (al) al.onclick = () => applyAuto(false);
+  }
+  /* =====================================================================
+     1.4.0 – MISURE STAMPATE dall'elettrocardiografo (riquadro in alto sul foglio dell'ELI 280):
+     compilazione rapida (≈ 10 s), prevalgono sulla lettura della foto (valori manuali ✎)
+     ===================================================================== */
+  const STAMP_F = [['fc', 'FC', '/min'], ['pr', 'PR', 'ms'], ['qrs', 'QRS', 'ms'], ['qt', 'QT', 'ms'], ['qtc', 'QTc', 'ms'], ['ap', 'Asse P', '°'], ['ar', 'Asse R', '°'], ['at', 'Asse T', '°']];
+  function renderStamp() {
+    const el = $('#stampCard'); if (!el) return;
+    const s = state.data.stampate || {};
+    let h = '<h3>🖨 Misure stampate dall\'elettrocardiografo</h3><p class="hint">Copia i valori del riquadro stampato (ELI 280: Freq Vent, Int PR, Dur QRS, QT/QTc, Assi P-R-T). Sono più affidabili della lettura della foto e, applicati, <b>prevalgono</b> su di essa.</p>';
+    h += '<div class="stamp-grid">' + STAMP_F.map(f => '<label><span>' + f[1] + '</span><input data-st="' + f[0] + '" inputmode="numeric" placeholder="' + f[2] + '" value="' + esc(s[f[0]] != null ? s[f[0]] : '') + '" aria-label="' + f[1] + ' stampato"></label>').join('') + '</div>';
+    h += '<label class="chk"><input type="checkbox" data-st="ivs"' + (s.ivs ? ' checked' : '') + '> L\'apparecchio segnala «criteri di voltaggio per IVS»</label>';
+    h += '<div class="actions"><button class="btn primary sm" id="stampApply">✅ Applica misure stampate</button><button class="btn sm" id="stampClear">Cancella</button></div>';
+    if (s.applicate) h += '<p class="hint">Applicate: ' + STAMP_F.filter(f => s[f[0]] != null && s[f[0]] !== '').map(f => f[1] + ' ' + s[f[0]]).join(' · ') + '.</p>';
+    el.innerHTML = h;
+    el.querySelectorAll('[data-st]').forEach(inp => inp.addEventListener('input', () => {
+      state.data.stampate = state.data.stampate || {};
+      const k = inp.dataset.st; if (k === 'ivs') state.data.stampate.ivs = inp.checked; else { const v = inp.value.replace(',', '.').replace(/[^0-9.\-]/g, ''); state.data.stampate[k] = v === '' ? null : v; }
+      persist(); if (k === 'ivs') schedule();
+    }));
+    $('#stampApply').onclick = applyStamp;
+    $('#stampClear').onclick = () => { state.data.stampate = {}; renderStamp(); schedule(); };
+  }
+  function applyStamp() {
+    const s = state.data.stampate || {}; const n = k => num(s[k]);
+    const bad = [];
+    if (n('fc') != null && (n('fc') < 15 || n('fc') > 300)) bad.push('FC');
+    if (n('pr') != null && (n('pr') < 60 || n('pr') > 600)) bad.push('PR');
+    if (n('qrs') != null && (n('qrs') < 40 || n('qrs') > 300)) bad.push('QRS');
+    if (n('qt') != null && (n('qt') < 180 || n('qt') > 800)) bad.push('QT');
+    ['ap', 'ar', 'at'].forEach(k => { if (n(k) != null && (n(k) < -180 || n(k) > 360)) bad.push('asse'); });
+    if (bad.length) return toast('Valori non plausibili: ' + bad.join(', ') + '. Controlla e riprova.', 5000);
+    const put = (p, v) => { if (v == null) return; setField(p, String(Math.round(v))); markManual(p); };
+    if (n('fc') != null) { put('ritmo.fc', n('fc')); put('ritmo.rr', 60000 / n('fc')); }
+    put('intervalli.pr', n('pr')); put('intervalli.qrs', n('qrs')); put('intervalli.qt', n('qt'));
+    if (n('ar') != null) put('asse.gradi', n('ar') > 180 ? n('ar') - 360 : n('ar'));
+    s.applicate = new Date().toISOString(); state.data.stampate = s;
+    renderStamp(); schedule();
+    toast('Misure stampate applicate (valori manuali ✎: prevalgono sulla lettura della foto).', 5000);
   }
   function isIrregular(R) { return R && R.rr && R.rr.length >= 3 && R.rrVar > Math.max(120, 0.15 * R.rrMean); }
   function applyAuto(all) {
@@ -1164,7 +1357,7 @@
         if (!canvas) return;
       }
       state.img = canvas; state.imgUrl = canvas.toDataURL('image/jpeg', 0.88);
-      state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = [];
+      state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = []; state.cal2 = null;
       storeImage(); updateCalStatus();
       requestAnimationFrame(() => { resize(); fit(); setMode(state.auto && state.auto.ok ? 'pan' : state.data.cal ? 'mis' : 'cal'); });
       persist(); renderReport();
@@ -1214,7 +1407,7 @@
     y += 2;
     // banner OMI
     const os = OMI_STYLE[s.omi];
-    const col = s.omi === 'positivo' ? [229, 72, 77] : s.omi === 'negativo' ? [48, 164, 108] : s.omi === 'NSTEMI ad alto rischio' ? [247, 107, 21] : [91, 100, 117];
+    const col = s.omi === 'positivo' ? [229, 72, 77] : s.omi === 'negativo' ? [48, 164, 108] : s.omi === 'NSTEMI ad alto rischio' || /^sospetto/.test(s.omi) ? [247, 107, 21] : [91, 100, 117];
     doc.setFillColor.apply(doc, col); doc.roundedRect(M, y, CW, 17, 3, 3, 'F');
     doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.text(pdfTxt(os[1] + (d.fotoDaVerificare ? ' - PROVVISORIO' : '')), M + 4, y + 7.5);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.text(doc.splitTextToSize(pdfTxt(os[2]), CW - 8)[0], M + 4, y + 13);
@@ -1326,7 +1519,7 @@
       state.rMarks = (r.marks && r.marks.r) || []; state.pMarks = (r.marks && r.marks.p) || [];
       state.calPts = []; state.misPts = []; state.overlay = []; state.auto = null; state.pdfBuf = null; renderAuto();
       const src = r.full || r.img;
-      if (src) { state.img = await imgFromUrl(src); state.imgUrl = src; if (!r.full) { state.data.cal = null; state.rMarks = []; state.pMarks = []; } }
+      if (src) { state.img = await imgFromUrl(src); state.imgUrl = src; if (!r.full) { state.data.cal = null; state.rMarks = []; state.pMarks = []; state.cal2 = null; } }
       else { state.img = null; state.imgUrl = null; }
       toast('Referto aperto');
       renderAllForms(); updateCalStatus(); analyze(); storeImage(); persist(); go('ref'); requestAnimationFrame(() => { resize(); fit(); });
@@ -1338,8 +1531,8 @@
     if (!confirm('Iniziare un nuovo ECG? I dati non salvati in archivio andranno persi.')) return;
     const keep = { velocita: state.data.tecnica.velocita, guadagno: '10', profilo: state.data.tecnica.profilo || 'auto' };
     state.data = blank(); state.data.tecnica = keep; state.data.operatore = '';
-    state.img = null; state.imgUrl = null; state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = [];
-    state.overlay = []; state.auto = null; state.pdfBuf = null; state.photoFile = null; renderAuto();
+    state.img = null; state.imgUrl = null; state.calPts = []; state.misPts = []; state.rMarks = []; state.pMarks = []; state.cal2 = null;
+    state.overlay = []; state.auto = null; state.pdfBuf = null; state.photoFile = null; renderAuto(); renderStamp();
     DB.del('kv', 'currentImage').catch(() => { });
     renderAllForms(); updateCalStatus(); analyze(); persist(); draw(); renderPanel(); go('ecg');
   }
@@ -1393,7 +1586,7 @@
     h += '<div class="card"><h3>Avvertenze</h3><p>ECGcheck legge automaticamente foto e PDF dell\'ECG (visione artificiale sul dispositivo, senza intelligenza artificiale "a scatola nera") e applica criteri ECG pubblicati alle misure. I valori letti sono <b>proposte da verificare</b>: lo ST da foto ha un errore tipico di ±0,2–0,5 mm. <b>Non</b> riproduce l\'algoritmo proprietario Queen of Hearts™ (rete neurale non pubblicata). È uno strumento didattico e di supporto, non un dispositivo medico (MDR 2017/745, AI Act): la diagnosi resta medica.</p><p class="hint">I dati restano sul dispositivo (localStorage/IndexedDB). Non inserire dati identificativi.</p></div>';
     h += '<div class="card"><h3>Precisione della lettura automatica</h3><div id="precView"><p class="hint">Calcolo…</p></div><div class="actions"><button class="btn sm" id="precExport">📤 Esporta registro di precisione</button></div><p class="hint">Il registro (senza dati del paziente né immagini) serve alle revisioni periodiche per correggere e migliorare la lettura automatica.</p></div>';
     h += '<div class="card"><h3>Fonti</h3><ol class="refs">' + M.riferimenti.map(r => '<li>' + esc(r) + '</li>').join('') + '</ol></div>';
-    h += '<div class="card"><h3>Registro modifiche</h3><ul class="refs"><li><b>1.3.7 (11/11/2026)</b> – SICUREZZA della lettura delle foto dopo le segnalazioni di Cimox (tracciati 5 e 7: foglio incurvato/sollevato da un foglio sovrapposto → riga I non trovata o righe slittate di una derivazione → asse, ampiezze, ST e diagnosi sbagliati). Nuovo controllo di coerenza: se mancano righe o se le derivazioni periferiche violano le identità di Einthoven/Goldberger (II = I + III, aVR + aVL + aVF = 0…) compare «DERIVAZIONI NON AFFIDABILI» e dalla foto vengono proposti solo FC, RR e QT, mai ampiezze, ST, asse, PR o morfologia delle P. Pausa/arresto proposto solo con RR ≥ 2 s e ≥ 1,5 volte l\'RR mediano (una bradicardia sinusale non è una pausa). Limite noto: la lettura delle righe sui fogli incurvati sarà corretta nella 1.4.0.</li><li><b>1.3.6 (11/11/2026)</b> – [Aggiornato con il 6° tracciato: falso «STEMI-equivalente posteriore» e falso «STE diffuso: favorire OMI» su un ECG con IVS e tachicardia sinusale → dalla foto lo ST non viene più applicato nelle derivazioni con QRS molto diversi da battito a battito; il pattern di pericardite (e «favorire OMI») richiede uno STE diffuso in ≥ 4 derivazioni di ≥ 2 territori, il solo PR alterato è informativo; T negative in III + aVF riconosciute (III conta solo insieme ad aVF/II); con P prima di ogni QRS PP e frequenza atriale proposti uguali a RR e FC.] Correzioni dopo la segnalazione di Cimox (4° tracciato: BBDx + EAS con BAV I, QRS 134 ms, letto come «OMI positivo»). (1) Falso OMI: «OMI inferiore con reciprocità in aVL» ora richiede STE ≥ 0,5 mm in almeno 2 derivazioni inferiori (prima bastava III a 0,5 mm) ed è declassato a «da confermare» con QRS ≥ 120 ms; «STE diffuso: favorire OMI» richiede un vero STE (≥ 2 derivazioni), altrimenti il solo PR alterato è segnalato come informativo. (2) PR dalla foto applicato quando le P sono riconosciute in modo coerente e la qualità è ≥ 70/100 (referto provvisorio): BAV di I grado riconosciuto (PR 268 ms letto, 260 ms misurato a mano). Limite noto: con blocchi di branca il QRS letto dalla foto è sottostimato (102 vs 134 ms) → inserisci QRS e morfologia nella scheda Ritmo.</li><li><b>1.3.5 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (3° tracciato): PP 87 ms / FC atriale 687/min accettati senza controllo → ora un PP < 170 ms (FC atriale > 350/min) viene scartato con l\'avviso «Intervallo PP non plausibile» e «Marca P» avvisa se si marcano inizio e fine della stessa P; RR medio dalla foto ora calcolato sulla riga del ritmo (prima 965 ms con min 934 – max 944, FC sottostimata di ~2/min); con ampiezze lette dalla foto e non ancora verificate l\'ipertrofia ventricolare sinistra da criteri di voltaggio (Sokolow, Cornell, Peguero) è segnalata come «da verificare» con l\'invito a misurare S in V1/V3 e R in V5/V6/aVL (segnalazione: falsa IVS su un tracciato a bassi voltaggi).</li><li><b>1.3.4 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (foto ELI 280 6×2 con referto vuoto: «Ritmo non classificato», misure «—»). (1) Onde P: un solo battito con picco anomalo (coda della T o rumore) annullava il riconoscimento delle P di tutta la riga; ora si tengono le P in posizione coerente (± 40 ms) → ritmo sinusale, PR ~160 ms sulla foto segnalata. (2) Referto: se la lettura automatica è pronta ma non applicata compare l\'avviso «Lettura automatica pronta, ma non ancora applicata» con il pulsante «Applica» direttamente nella scheda Referto (prima il referto restava vuoto senza spiegazione). (3) Criteri: bassi voltaggi nel post-cardiochirurgia con confronto con l\'ECG preoperatorio e DD versamento pericardico/pleurico, pneumotorace, edema.</li><li><b>1.3.3 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (foto ELI 280 6×2 con il foglio parzialmente coperto in alto): le righe venivano assegnate alle derivazioni sbagliate (riga I persa, riga di testo a piè di pagina presa per aVF) → ritmo «irregolarmente irregolare» con P regolari, falsa IVD, falso sottoslivellamento reciproco in II/aVF e falso OMI. Ora vale la disposizione dell\'impulso della maggioranza delle righe e il passo tra le righe è stimato in modo robusto. Derivazioni con pochi battiti riconosciuti rispetto alla FC (tracce precordiali alte e intrecciate) non propongono più ampiezze né ST; R/S molto diverse da battito a battito segnalate come incerte. Nuovo: misura automatica del sottoslivellamento del PR rispetto al tratto TP (proposto nella scheda Pattern se ≥ 0,4 mm in ≥ 3 derivazioni, con PR sopraslivellato in aVR) e ST anche rispetto al TP, per la diagnosi differenziale pericardite/OMI. Criteri 2026.11.5: lo STD in aVL conta contro la pericardite solo se ≥ 0,5 mm (valori minori sono nel rumore di misura e vengono solo segnalati).</li><li><b>1.3.2 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (screenshot PMcardio letto CAPOVOLTO: derivazioni scambiate, onde invertite, asse −105° invece di +47°, ritmo non riconosciuto, falso OMI posteriore). (1) Orientamento: uno screenshot ruotato di 180° o 270° con la taratura a fine riga non veniva riconosciuto (mancava il controllo dell\'impulso rovesciato a sinistra); ora l\'impulso deve collegarsi con i lati alla propria linea di base e il capovolgimento rilegge l\'intera immagine ruotata: lo stesso screenshot dà lo stesso risultato in tutte e 4 le orientazioni (asse +47°). Nuovo pulsante «🔃 Tracciato capovolto? Rileggi ruotato di 180°» nella scheda della lettura automatica; il pulsante ⟳ ruota solo la visualizzazione (ora è indicato). (2) Ritmo: onde P piccole degli screenshot riconosciute (linea di base presa anche dal tratto TP, PR stimato dal picco della P se l\'inizio non è definibile) → ritmo sinusale, PR 133 ms. (3) Punto J: non più posto sul nadir della S (falso sottoslivellamento di −1,9 mm in V4 che attivava lo «STDmax V1–V4»). (4) Criteri 2026.11.4: per lo STDmax V1–V4 e lo STD diffuso conta solo il sottoslivellamento orizzontale/discendente (UDMI): se a J+60 ms il tratto ST è risalito sopra −0,5 mm (STD ascendente del punto J) non viene più considerato ischemico (nuovo reperto informativo; de Winter resta a parte). Test: screenshot reale nelle 4 orientazioni, 16 screenshot sintetici + 32 ruotati (90/180/270°) entro gli obiettivi, foto ELI 280 e PDF invariati o migliorati.</li><li><b>1.3.1 (10/11/2026)</b> – Lettura degli SCREENSHOT e delle immagini digitali di ECG (visualizzatori come PMcardio, cartelle cliniche, PDF esportati come immagine): griglia blu, grigia o verde oltre a quella rosa (colore riconosciuto automaticamente), traccia sottile antialiasata, immagini piccole (3–4 px/mm) ingrandite prima della lettura, impulso di taratura alla FINE della riga (prima veniva scambiato per una foto capovolta di 180°), righe senza impulso riconosciuto e bordi del foglio non più confusi con una derivazione, passo della griglia affinato su tutti i multipli di 1 mm (JPEG compressi). Indice di qualità: risoluzione originale dello screenshot. Test: 16 screenshot sintetici (4 colori di griglia, 3×4+1 e 6×2, 3,4–4,5 px/mm, PNG e JPEG, taratura a destra o a sinistra) tutti entro gli obiettivi (FC ±1/min, ST 0,07–0,14 mm, R ≤ 0,56 mm, QT −8/−16 ms); 1 screenshot reale PMcardio letto (12/12 derivazioni, qualità 80/100); foto ELI 280 invariate.</li><li><b>1.3.0 (09/11/2026)</b> – NUOVE FUNZIONI: (1) strumenti di misura guidata nella barra della scheda ECG (PR, QRS, Onda R/S/Q/P/T con ampiezza in mm e mV e durata, ST con linea di base → punto J → J+60 e soglia STEMI della derivazione mostrata subito, QT con QTc, PP, RR, RP con orientamento TRNAV/TRAV), con istruzioni dei tocchi, risultato immediato e «Applica»; la barra scorre orizzontalmente al suo interno; (2) tabella Derivazioni con P, Q, R, S, J, J+60 e T in mm, mV o mm sulla carta (conversione per guadagno 5/10/20 mm/mV) e durate in ms, validazione immediata (range plausibili, Q patologiche, legge di Einthoven); i valori corretti a mano (✎) prevalgono sulla lettura automatica e sono registrati nel registro di precisione (con l\'errore sistematico letto − corretto); (3) nuova scheda «Calcoli»: asse (minimi quadrati con guadagno √3/2 delle aumentate, metodo I/aVF, derivazione isodifasica, sistema esassiale disegnato, QRS netti e asse sovrascrivibili; il motore usa ora l\'asse ai minimi quadrati), ST a 12 derivazioni (J e J+60, soglie per sesso/età, contiguità, reciprocità, STE/S di Armstrong, ST/T, STDmax V1–V4, V4R e V7–V9), QTc (Bazett, Fridericia, Framingham, Hodges, QT modificato di Bogossian, soglie per sesso, ≥ 500 ms, QT corto, Δ ≥ 60 ms, media su più battiti in FA); (4) pagina «Criteri» testuale e offline con tabelle sinottiche e fonti. FOTO: corretta la sovrastima delle R (la traccia di una riga veniva "dirottata" sulla R alta o sulla S profonda della riga vicina nel formato 6×2, es. R di V3 8 mm letta 15–23 mm); le R alte non sono più tagliate a metà distanza tra le righe (R 24 mm letta 14 mm); dove le tracce si toccano il valore è un minimo («≥») e lo ST «n.m.» invece di un valore falso (evitato uno STE fittizio di 4–9 mm in V4); punti base/apice R e S mostrati e trascinabili; QRS/punto J robusti con T precoce e FC alte (QRS letto 160–240 ms → errore ≤ 6 ms) e con linee spesse a 8 px/mm; foto mosse riconosciute e rifiutate. CRITERI: ESC 2026 scompenso (HFrEF < 50%, HFpEF ≥ 50%, HFmrEF abolito); consenso APHRS/JHRS 2026 sulle sindromi dell\'onda J (Shanghai score modificato per Brugada e ripolarizzazione precoce); ST60 di V3 dalla tabella usato dalla formula a 4 variabili. Test: 53 casi del motore + 25 dei calcolatori, 33 foto sintetiche, PDF sintetici, interfaccia a 390 px.</li><li><b>1.2.3 (02/11/2026)</b> – Lettura FOTO: corretto il troncamento dell\'apice delle onde R/S alte (un residuo della griglia vicino alla linea di base "rubava" la traccia sui tratti ripidi: es. R di V6 13 mm letta 9,8 mm; errore medio R da 0,46 a 0,10 mm sulle foto di prova); durata del QRS non più sovrastimata dalla media mobile (+8–10 ms: QRS 90 ms letto 108–114 ms, ora 100–106 ms come nei PDF; evita falsi "ritardi di conduzione aspecifici"); righe del tracciato riconosciute anche a bassa risoluzione (~6 px/mm) con il bordo del foglio su fondo scuro e righe piatte senza impulso scartate nel profilo Automatico; con righe mancanti la qualità non può risultare "buona"; QT: la tangente della T si ferma alla fine della branca discendente e, con FC > 120/min, avviso di possibile sovrapposizione P/T (QT sovrastimato fino a ~30 ms). PDF senza etichette delle derivazioni: con il profilo ELI 280/6×2 ogni riga continua viene divisa in periferica + precordiale (prima veniva interpretata come 3×4). Criteri: recepita la V Definizione Universale di IMA (ESC/ACC/AHA/WHF, Eur Heart J 28/08/2026: IM primario/secondario/correlato a procedura) nei riferimenti e nelle note STEMI/post-cardiochirurgia, soglie ECG di STE invariate in attesa della verifica del capitolo ECG sul testo integrale; iperkaliemia/FV con riferimento ERC 2025. Test: 47 casi del motore dei criteri, 19 foto sintetiche ELI 280/3×4 (18/19 entro gli obiettivi; 1.2.2: 9/19), PDF sintetici.</li><li><b>1.2.2 (01/11/2026)</b> – Sicurezza: i valori letti automaticamente da una FOTO rendono il referto «PROVVISORIO» (scheda Referto, indicatore OMI e PDF) finché l\'operatore non conferma di averli verificati e corretti. Motivo: su 2 foto reali segnalate la lettura ha sbagliato onde P, durata del QRS, asse e ampiezze delle precordiali (voltaggi alti, foto non frontali).</li><li><b>1.2.1 (01/11/2026)</b> – Correzioni dopo segnalazione (ECG con IVS): riconoscimento automatico dello "strain" (ST discendente + T negativa asimmetrica in I, aVL, V4–V6 a R dominante); con IVS lo STE in V1–V3 è valutato con il rapporto STE/S (≥ 25%, Armstrong 2012) e lo STD in V3–V4 a R dominante in continuità con lo strain non attiva più lo STDmax V1–V4 (Meyers 2021: solo STD non spiegato da cause secondarie), con confronto relativo al QRS a parità di STD; QT corto valutato con Bazett e non con il QT modificato per QRS largo; avviso se la frequenza atriale (PP) è incoerente con la FC in conduzione 1:1; avviso per durata P > 160 ms; il caricamento di un nuovo tracciato azzera le misure del precedente (guadagno riportato a 10 mm/mV); dalla foto PR e durata P non vengono più applicati automaticamente.</li><li><b>1.2.0 (01/11/2026)</b> – Lettura automatica delle FOTO: riconoscimento del foglio, orientamento (0/90/180/270°) e raddrizzamento, calibrazione da griglia e impulso di 10 mm, separazione traccia/griglia, inseguimento della traccia, profili apparecchio (ELI 280 6×2, 6×2, 3×4+1, 3×4+3, 3×4, 12×1), indice di qualità con rifiuto delle foto mosse, misure R/S/ST/ST60/T, FC, QRS, QT, asse ai minimi quadrati. Registro di precisione (valori letti vs confermati), segnalazione delle letture errate, revisioni settimanali. Con QRS ≥ 120 ms senza morfologia indicata: avviso che lo ST può essere secondario; "Ritmo a QRS largo" con P non definite declassato ad alto con richiesta di definire le P. Validazione: 4 foto reali ELI 280 (FC ±3/min, QT ±30 ms) e foto simulate (ST errore medio 0,12–0,23 mm).</li><li><b>1.1.0 (31/10/2026)</b> – Lettura automatica degli ECG in PDF (pdf.js integrato, offline): calibrazione da griglia o impulso di taratura, riconoscimento delle derivazioni, R/S/ST/ST60/T per derivazione, ritmo, PR/QRS/QT, lettura delle misure stampate dall\'elettrocardiografo; nuovo reperto "ritmo irregolare senza P definite".</li><li><b>1.0.0 (31/10/2026)</b> – Prima versione: calibro digitale su foto/PDF, motore a regole (ritmo, OMI/STEMI-equivalenti, conduzione SA/AV/IV, asse, camere, pericardite ESC 2025, ripolarizzazione precoce, QT, canalopatie, elettroliti), referto PDF, archivio, revisione programmata.</li></ul></div>';
+    h += '<div class="card"><h3>Registro modifiche</h3><ul class="refs"><li><b>1.4.0 (16/11/2026)</b> – AFFIDABILITÀ della lettura delle FOTO (priorità dopo la segnalazione di Cimox dell\'11/11). (1) Foglio incurvato/inclinato in modo non uniforme (tracciati 5 e 7): la linea di base di ogni riga è inseguita in bande verticali di 25 mm, collegata banda per banda e lisciata (parabola robusta) e l\'immagine viene raddrizzata riga per riga; inoltre la scala dei tempi è resa uniforme misurando il passo della griglia in strisce di 40 mm (prospettiva/curvatura: fino al 17% di differenza tra sinistra e destra, RR 735 vs 660 ms nello stesso tracciato). Risultato: 6/6 righe e nessuna derivazione slittata sulle 7 foto reali, asse entro ±4° dallo stampato. (2) Traccia sottile/chiara (tracciato 3): i tratti ripidi del QRS sono recuperati nel canale rosso (la griglia rossa vi è quasi invisibile) e i tratti spezzati sono ricuciti → 12/12 derivazioni lette. (3) FC: battiti di consenso tra le derivazioni registrate in contemporanea (un QRS vero compare alla stessa ascissa in più derivazioni) → FC entro ±1/min dallo stampato sulle 7 foto, anche ridimensionate (tracciato 7: 58 vs 57/min, prima 38 sul telefono). (4) ST dalla foto proposto solo se coerente tra i battiti (≥ 3 battiti, dispersione J ≤ 0,5 mm); i criteri OMI/STEMI soddisfatti da valori letti dalla foto e non ancora verificati diventano «OMI SOSPETTO – DA VERIFICARE» (prima «OMI positivo»: 3 falsi OMI su 7 foto). (5) STDmax V1–V4 con BBDx o QRS ≥ 120 ms: «da confermare» (ST secondario), non più STEMI-equivalente. (6) Controllo di Einthoven: le derivazioni con ampiezze già segnalate come incerte non fanno scartare tutte le derivazioni. NUOVE FUNZIONI: modulo «Misure stampate» (FC, PR, QRS, QT, QTc, assi P-R-T e criteri di voltaggio IVS segnalati dall\'apparecchio: compilazione in ~10 s, prevalgono sulla foto, confronto foto/stampato evidenziato); CALIBRO MOBILE con due linee trascinabili singolarmente o come coppia rigida (maniglie da 44 px), linee orizzontali per le ampiezze, lettura immediata di ms, mm, /min e mV, MARCIA (march-out) per regolarità RR/PP, P nascoste, P bloccate, Wenckebach e dissociazione AV, pulsanti «Usa come RR/PP/PR/QRS/QT» e serie di battiti con media, min, max e variabilità. Limiti noti: durata del QRS sottostimata con BBDx (101 vs 134 ms) e QRS stretti (−12/−27 ms); ST dalla foto con possibile sovrastima di 0,5–1 mm nelle derivazioni con R alta; R/S delle precordiali con voltaggi molto alti restano valori minimi (IVS riconosciuta solo con le misure stampate o con il calibro). Rinviati alle prossime revisioni: calcolatore Onda T, DD dello STE, disturbi di conduzione intraventricolare, suggerimenti eziologici.</li><li><b>1.3.7 (11/11/2026)</b> – SICUREZZA della lettura delle foto dopo le segnalazioni di Cimox (tracciati 5 e 7: foglio incurvato/sollevato da un foglio sovrapposto → riga I non trovata o righe slittate di una derivazione → asse, ampiezze, ST e diagnosi sbagliati). Nuovo controllo di coerenza: se mancano righe o se le derivazioni periferiche violano le identità di Einthoven/Goldberger (II = I + III, aVR + aVL + aVF = 0…) compare «DERIVAZIONI NON AFFIDABILI» e dalla foto vengono proposti solo FC, RR e QT, mai ampiezze, ST, asse, PR o morfologia delle P. Pausa/arresto proposto solo con RR ≥ 2 s e ≥ 1,5 volte l\'RR mediano (una bradicardia sinusale non è una pausa). Limite noto: la lettura delle righe sui fogli incurvati sarà corretta nella 1.4.0.</li><li><b>1.3.6 (11/11/2026)</b> – [Aggiornato con il 6° tracciato: falso «STEMI-equivalente posteriore» e falso «STE diffuso: favorire OMI» su un ECG con IVS e tachicardia sinusale → dalla foto lo ST non viene più applicato nelle derivazioni con QRS molto diversi da battito a battito; il pattern di pericardite (e «favorire OMI») richiede uno STE diffuso in ≥ 4 derivazioni di ≥ 2 territori, il solo PR alterato è informativo; T negative in III + aVF riconosciute (III conta solo insieme ad aVF/II); con P prima di ogni QRS PP e frequenza atriale proposti uguali a RR e FC.] Correzioni dopo la segnalazione di Cimox (4° tracciato: BBDx + EAS con BAV I, QRS 134 ms, letto come «OMI positivo»). (1) Falso OMI: «OMI inferiore con reciprocità in aVL» ora richiede STE ≥ 0,5 mm in almeno 2 derivazioni inferiori (prima bastava III a 0,5 mm) ed è declassato a «da confermare» con QRS ≥ 120 ms; «STE diffuso: favorire OMI» richiede un vero STE (≥ 2 derivazioni), altrimenti il solo PR alterato è segnalato come informativo. (2) PR dalla foto applicato quando le P sono riconosciute in modo coerente e la qualità è ≥ 70/100 (referto provvisorio): BAV di I grado riconosciuto (PR 268 ms letto, 260 ms misurato a mano). Limite noto: con blocchi di branca il QRS letto dalla foto è sottostimato (102 vs 134 ms) → inserisci QRS e morfologia nella scheda Ritmo.</li><li><b>1.3.5 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (3° tracciato): PP 87 ms / FC atriale 687/min accettati senza controllo → ora un PP < 170 ms (FC atriale > 350/min) viene scartato con l\'avviso «Intervallo PP non plausibile» e «Marca P» avvisa se si marcano inizio e fine della stessa P; RR medio dalla foto ora calcolato sulla riga del ritmo (prima 965 ms con min 934 – max 944, FC sottostimata di ~2/min); con ampiezze lette dalla foto e non ancora verificate l\'ipertrofia ventricolare sinistra da criteri di voltaggio (Sokolow, Cornell, Peguero) è segnalata come «da verificare» con l\'invito a misurare S in V1/V3 e R in V5/V6/aVL (segnalazione: falsa IVS su un tracciato a bassi voltaggi).</li><li><b>1.3.4 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (foto ELI 280 6×2 con referto vuoto: «Ritmo non classificato», misure «—»). (1) Onde P: un solo battito con picco anomalo (coda della T o rumore) annullava il riconoscimento delle P di tutta la riga; ora si tengono le P in posizione coerente (± 40 ms) → ritmo sinusale, PR ~160 ms sulla foto segnalata. (2) Referto: se la lettura automatica è pronta ma non applicata compare l\'avviso «Lettura automatica pronta, ma non ancora applicata» con il pulsante «Applica» direttamente nella scheda Referto (prima il referto restava vuoto senza spiegazione). (3) Criteri: bassi voltaggi nel post-cardiochirurgia con confronto con l\'ECG preoperatorio e DD versamento pericardico/pleurico, pneumotorace, edema.</li><li><b>1.3.3 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (foto ELI 280 6×2 con il foglio parzialmente coperto in alto): le righe venivano assegnate alle derivazioni sbagliate (riga I persa, riga di testo a piè di pagina presa per aVF) → ritmo «irregolarmente irregolare» con P regolari, falsa IVD, falso sottoslivellamento reciproco in II/aVF e falso OMI. Ora vale la disposizione dell\'impulso della maggioranza delle righe e il passo tra le righe è stimato in modo robusto. Derivazioni con pochi battiti riconosciuti rispetto alla FC (tracce precordiali alte e intrecciate) non propongono più ampiezze né ST; R/S molto diverse da battito a battito segnalate come incerte. Nuovo: misura automatica del sottoslivellamento del PR rispetto al tratto TP (proposto nella scheda Pattern se ≥ 0,4 mm in ≥ 3 derivazioni, con PR sopraslivellato in aVR) e ST anche rispetto al TP, per la diagnosi differenziale pericardite/OMI. Criteri 2026.11.5: lo STD in aVL conta contro la pericardite solo se ≥ 0,5 mm (valori minori sono nel rumore di misura e vengono solo segnalati).</li><li><b>1.3.2 (10/11/2026)</b> – Correzioni dopo la segnalazione di Cimox (screenshot PMcardio letto CAPOVOLTO: derivazioni scambiate, onde invertite, asse −105° invece di +47°, ritmo non riconosciuto, falso OMI posteriore). (1) Orientamento: uno screenshot ruotato di 180° o 270° con la taratura a fine riga non veniva riconosciuto (mancava il controllo dell\'impulso rovesciato a sinistra); ora l\'impulso deve collegarsi con i lati alla propria linea di base e il capovolgimento rilegge l\'intera immagine ruotata: lo stesso screenshot dà lo stesso risultato in tutte e 4 le orientazioni (asse +47°). Nuovo pulsante «🔃 Tracciato capovolto? Rileggi ruotato di 180°» nella scheda della lettura automatica; il pulsante ⟳ ruota solo la visualizzazione (ora è indicato). (2) Ritmo: onde P piccole degli screenshot riconosciute (linea di base presa anche dal tratto TP, PR stimato dal picco della P se l\'inizio non è definibile) → ritmo sinusale, PR 133 ms. (3) Punto J: non più posto sul nadir della S (falso sottoslivellamento di −1,9 mm in V4 che attivava lo «STDmax V1–V4»). (4) Criteri 2026.11.4: per lo STDmax V1–V4 e lo STD diffuso conta solo il sottoslivellamento orizzontale/discendente (UDMI): se a J+60 ms il tratto ST è risalito sopra −0,5 mm (STD ascendente del punto J) non viene più considerato ischemico (nuovo reperto informativo; de Winter resta a parte). Test: screenshot reale nelle 4 orientazioni, 16 screenshot sintetici + 32 ruotati (90/180/270°) entro gli obiettivi, foto ELI 280 e PDF invariati o migliorati.</li><li><b>1.3.1 (10/11/2026)</b> – Lettura degli SCREENSHOT e delle immagini digitali di ECG (visualizzatori come PMcardio, cartelle cliniche, PDF esportati come immagine): griglia blu, grigia o verde oltre a quella rosa (colore riconosciuto automaticamente), traccia sottile antialiasata, immagini piccole (3–4 px/mm) ingrandite prima della lettura, impulso di taratura alla FINE della riga (prima veniva scambiato per una foto capovolta di 180°), righe senza impulso riconosciuto e bordi del foglio non più confusi con una derivazione, passo della griglia affinato su tutti i multipli di 1 mm (JPEG compressi). Indice di qualità: risoluzione originale dello screenshot. Test: 16 screenshot sintetici (4 colori di griglia, 3×4+1 e 6×2, 3,4–4,5 px/mm, PNG e JPEG, taratura a destra o a sinistra) tutti entro gli obiettivi (FC ±1/min, ST 0,07–0,14 mm, R ≤ 0,56 mm, QT −8/−16 ms); 1 screenshot reale PMcardio letto (12/12 derivazioni, qualità 80/100); foto ELI 280 invariate.</li><li><b>1.3.0 (09/11/2026)</b> – NUOVE FUNZIONI: (1) strumenti di misura guidata nella barra della scheda ECG (PR, QRS, Onda R/S/Q/P/T con ampiezza in mm e mV e durata, ST con linea di base → punto J → J+60 e soglia STEMI della derivazione mostrata subito, QT con QTc, PP, RR, RP con orientamento TRNAV/TRAV), con istruzioni dei tocchi, risultato immediato e «Applica»; la barra scorre orizzontalmente al suo interno; (2) tabella Derivazioni con P, Q, R, S, J, J+60 e T in mm, mV o mm sulla carta (conversione per guadagno 5/10/20 mm/mV) e durate in ms, validazione immediata (range plausibili, Q patologiche, legge di Einthoven); i valori corretti a mano (✎) prevalgono sulla lettura automatica e sono registrati nel registro di precisione (con l\'errore sistematico letto − corretto); (3) nuova scheda «Calcoli»: asse (minimi quadrati con guadagno √3/2 delle aumentate, metodo I/aVF, derivazione isodifasica, sistema esassiale disegnato, QRS netti e asse sovrascrivibili; il motore usa ora l\'asse ai minimi quadrati), ST a 12 derivazioni (J e J+60, soglie per sesso/età, contiguità, reciprocità, STE/S di Armstrong, ST/T, STDmax V1–V4, V4R e V7–V9), QTc (Bazett, Fridericia, Framingham, Hodges, QT modificato di Bogossian, soglie per sesso, ≥ 500 ms, QT corto, Δ ≥ 60 ms, media su più battiti in FA); (4) pagina «Criteri» testuale e offline con tabelle sinottiche e fonti. FOTO: corretta la sovrastima delle R (la traccia di una riga veniva "dirottata" sulla R alta o sulla S profonda della riga vicina nel formato 6×2, es. R di V3 8 mm letta 15–23 mm); le R alte non sono più tagliate a metà distanza tra le righe (R 24 mm letta 14 mm); dove le tracce si toccano il valore è un minimo («≥») e lo ST «n.m.» invece di un valore falso (evitato uno STE fittizio di 4–9 mm in V4); punti base/apice R e S mostrati e trascinabili; QRS/punto J robusti con T precoce e FC alte (QRS letto 160–240 ms → errore ≤ 6 ms) e con linee spesse a 8 px/mm; foto mosse riconosciute e rifiutate. CRITERI: ESC 2026 scompenso (HFrEF < 50%, HFpEF ≥ 50%, HFmrEF abolito); consenso APHRS/JHRS 2026 sulle sindromi dell\'onda J (Shanghai score modificato per Brugada e ripolarizzazione precoce); ST60 di V3 dalla tabella usato dalla formula a 4 variabili. Test: 53 casi del motore + 25 dei calcolatori, 33 foto sintetiche, PDF sintetici, interfaccia a 390 px.</li><li><b>1.2.3 (02/11/2026)</b> – Lettura FOTO: corretto il troncamento dell\'apice delle onde R/S alte (un residuo della griglia vicino alla linea di base "rubava" la traccia sui tratti ripidi: es. R di V6 13 mm letta 9,8 mm; errore medio R da 0,46 a 0,10 mm sulle foto di prova); durata del QRS non più sovrastimata dalla media mobile (+8–10 ms: QRS 90 ms letto 108–114 ms, ora 100–106 ms come nei PDF; evita falsi "ritardi di conduzione aspecifici"); righe del tracciato riconosciute anche a bassa risoluzione (~6 px/mm) con il bordo del foglio su fondo scuro e righe piatte senza impulso scartate nel profilo Automatico; con righe mancanti la qualità non può risultare "buona"; QT: la tangente della T si ferma alla fine della branca discendente e, con FC > 120/min, avviso di possibile sovrapposizione P/T (QT sovrastimato fino a ~30 ms). PDF senza etichette delle derivazioni: con il profilo ELI 280/6×2 ogni riga continua viene divisa in periferica + precordiale (prima veniva interpretata come 3×4). Criteri: recepita la V Definizione Universale di IMA (ESC/ACC/AHA/WHF, Eur Heart J 28/08/2026: IM primario/secondario/correlato a procedura) nei riferimenti e nelle note STEMI/post-cardiochirurgia, soglie ECG di STE invariate in attesa della verifica del capitolo ECG sul testo integrale; iperkaliemia/FV con riferimento ERC 2025. Test: 47 casi del motore dei criteri, 19 foto sintetiche ELI 280/3×4 (18/19 entro gli obiettivi; 1.2.2: 9/19), PDF sintetici.</li><li><b>1.2.2 (01/11/2026)</b> – Sicurezza: i valori letti automaticamente da una FOTO rendono il referto «PROVVISORIO» (scheda Referto, indicatore OMI e PDF) finché l\'operatore non conferma di averli verificati e corretti. Motivo: su 2 foto reali segnalate la lettura ha sbagliato onde P, durata del QRS, asse e ampiezze delle precordiali (voltaggi alti, foto non frontali).</li><li><b>1.2.1 (01/11/2026)</b> – Correzioni dopo segnalazione (ECG con IVS): riconoscimento automatico dello "strain" (ST discendente + T negativa asimmetrica in I, aVL, V4–V6 a R dominante); con IVS lo STE in V1–V3 è valutato con il rapporto STE/S (≥ 25%, Armstrong 2012) e lo STD in V3–V4 a R dominante in continuità con lo strain non attiva più lo STDmax V1–V4 (Meyers 2021: solo STD non spiegato da cause secondarie), con confronto relativo al QRS a parità di STD; QT corto valutato con Bazett e non con il QT modificato per QRS largo; avviso se la frequenza atriale (PP) è incoerente con la FC in conduzione 1:1; avviso per durata P > 160 ms; il caricamento di un nuovo tracciato azzera le misure del precedente (guadagno riportato a 10 mm/mV); dalla foto PR e durata P non vengono più applicati automaticamente.</li><li><b>1.2.0 (01/11/2026)</b> – Lettura automatica delle FOTO: riconoscimento del foglio, orientamento (0/90/180/270°) e raddrizzamento, calibrazione da griglia e impulso di 10 mm, separazione traccia/griglia, inseguimento della traccia, profili apparecchio (ELI 280 6×2, 6×2, 3×4+1, 3×4+3, 3×4, 12×1), indice di qualità con rifiuto delle foto mosse, misure R/S/ST/ST60/T, FC, QRS, QT, asse ai minimi quadrati. Registro di precisione (valori letti vs confermati), segnalazione delle letture errate, revisioni settimanali. Con QRS ≥ 120 ms senza morfologia indicata: avviso che lo ST può essere secondario; "Ritmo a QRS largo" con P non definite declassato ad alto con richiesta di definire le P. Validazione: 4 foto reali ELI 280 (FC ±3/min, QT ±30 ms) e foto simulate (ST errore medio 0,12–0,23 mm).</li><li><b>1.1.0 (31/10/2026)</b> – Lettura automatica degli ECG in PDF (pdf.js integrato, offline): calibrazione da griglia o impulso di taratura, riconoscimento delle derivazioni, R/S/ST/ST60/T per derivazione, ritmo, PR/QRS/QT, lettura delle misure stampate dall\'elettrocardiografo; nuovo reperto "ritmo irregolare senza P definite".</li><li><b>1.0.0 (31/10/2026)</b> – Prima versione: calibro digitale su foto/PDF, motore a regole (ritmo, OMI/STEMI-equivalenti, conduzione SA/AV/IV, asse, camere, pericardite ESC 2025, ripolarizzazione precoce, QT, canalopatie, elettroliti), referto PDF, archivio, revisione programmata.</li></ul></div>';
     h += '<div class="card"><h3>Tema</h3><div class="actions"><button class="btn sm" data-theme-set="">Automatico</button><button class="btn sm" data-theme-set="light">Chiaro</button><button class="btn sm" data-theme-set="dark">Scuro</button></div></div>';
     $('#infoView').innerHTML = h;
     $('#precExport').onclick = exportPrecision;
@@ -1459,7 +1652,7 @@
       if (saved && saved.data) { state.data = Object.assign(blank(), saved.data); state.rMarks = saved.rMarks || []; state.pMarks = saved.pMarks || []; state.enh = !!saved.enh; state.overlay = saved.overlay || []; state.auto = saved.auto || null; }
     } catch (e) { }
     $('#enhBtn').classList.toggle('active', state.enh);
-    renderAllForms(); renderCatalog(); renderInfo(); updateCalStatus(); renderAuto();
+    renderAllForms(); renderCatalog(); renderInfo(); updateCalStatus(); renderAuto(); renderStamp();
     await DB.open();
     try { const url = await DB.get('kv', 'currentImage'); if (url) { state.img = await imgFromUrl(url); state.imgUrl = url; } } catch (e) { }
     resize(); fit(); renderPanel(); analyze(); checkReview(false); registerSW();

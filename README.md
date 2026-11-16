@@ -1,4 +1,4 @@
-# ECGcheck 1.3.7 — Analisi ECG assistita (PWA)
+# ECGcheck 1.4.0 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -90,6 +90,20 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.4.0 (16/11/2026) — affidabilità delle foto, misure stampate, calibro mobile
+
+- **Foglio incurvato**: linea di base di ogni riga inseguita in bande verticali di 25 mm e raddrizzata riga per
+  riga (parabola robusta); scala dei tempi resa uniforme dal passo locale della griglia (strisce di 40 mm).
+- **Traccia sottile**: tratti ripidi del QRS recuperati nel canale rosso e ricuciti.
+- **FC**: battiti di consenso tra derivazioni simultanee (FC ±1/min sulle 7 foto reali di prova).
+- **Sicurezza**: ST dalla foto solo se coerente tra i battiti; criteri OMI da valori non verificati della foto →
+  «OMI sospetto – da verificare»; STDmax V1–V4 con BBDx/QRS ≥ 120 ms → «da confermare».
+- **Misure stampate** (scheda ECG): FC, PR, QRS, QT, QTc, assi P-R-T, criteri di voltaggio IVS; prevalgono sulla foto.
+- **Calibro mobile** (barra strumenti «⇹»): due linee trascinabili singolarmente o come coppia, linee orizzontali
+  per le ampiezze, marcia (march-out), «Usa come RR/PP/PR/QRS/QT», serie di battiti con media/min/max/variabilità.
+- Limiti noti: QRS sottostimato con BBDx; ST dalla foto con possibile sovrastima nelle derivazioni con R alta;
+  voltaggi precordiali molto alti = valori minimi.
 
 ## Aggiornamento 1.3.7 (11/11/2026) — sicurezza delle derivazioni
 

@@ -8,10 +8,10 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.3.7',
-    criteriaVersion: '2026.11.5',
-    lastReview: '2026-11-10',
-    nextReview: '2026-11-16',
+    version: '1.4.0',
+    criteriaVersion: '2026.11.6',
+    lastReview: '2026-11-16',
+    nextReview: '2026-11-23',
     riferimenti: [
       'Mills NL, Newby LK, Zaman S et al. Fifth Universal Definition of Myocardial Infarction (2026). ESC/ACC/AHA/WHF. Eur Heart J 2026;47:5911-5958 (online 28/08/2026), doi:10.1093/eurheartj/ehag101',
       'Thygesen K et al. Fourth Universal Definition of Myocardial Infarction (2018). Eur Heart J 2019;40:237-269 (soglie ECG di STE utilizzate dal motore)',
@@ -711,15 +711,21 @@
       const strainLeads = ['I', 'aVL', 'V4', 'V5', 'V6'].filter(l => st(d, l) !== null && st(d, l) <= -0.5 && amp(d, l, 't') !== null && amp(d, l, 't') <= -1 && (amp(d, l, 'r') || 0) > (amp(d, l, 's') || 0));
       const strain = !!(d.pattern && d.pattern.strain) || (strainLeads.length >= 2 && strainLeads.some(l => ['V5', 'V6'].includes(l)));
       ctx.strain = strain; ctx.strainLeads = strainLeads;
+      // 1.4.0: criteri di voltaggio segnalati dall'elettrocardiografo (modulo «Misure stampate»): l'apparecchio
+      // misura R e S sul segnale digitale anche quando sulla carta (6×2) le tracce si sovrappongono
+      const ivsStamp = !!(d.stampate && d.stampate.ivs);
+      if (ivsStamp) crit.unshift('criteri di voltaggio per IVS segnalati dall\'elettrocardiografo (misure stampate)');
       if (crit.length) {
         ctx.lvh = true;
         const det = ['Criteri positivi: ' + crit.join('; ') + '.'];
+        const daVer = d.fotoDaVerificare && !ivsStamp;
         if (eta !== null && eta < 35) det.push('Età < 35 anni: i criteri di voltaggio hanno bassa specificità.');
         if (strain) det.push('Pattern "strain"' + (strainLeads.length ? ' in ' + strainLeads.join(', ') : '') + ': ST discendente con T negativa asimmetrica nelle derivazioni a R dominante (alterazioni secondarie della ripolarizzazione).');
         // 1.3.5: con ampiezze lette dalla foto e non ancora verificate i criteri di voltaggio restano "da verificare"
         // (segnalazione: falsa IVS «Sokolow > 35 mm» su un tracciato a bassi voltaggi)
-        if (d.fotoDaVerificare) det.unshift('DA VERIFICARE: ampiezze lette automaticamente dalla foto. Prima di accettare il reperto misura S in V1/V3 e R in V5/V6/aVL con lo strumento «Onda R/S» (o correggile nella scheda Derivazioni) e conferma le misure.');
-        F.add(CAT.CAMERE, 'ivs', (strain ? 'Ipertrofia ventricolare sinistra con alterazioni della ripolarizzazione ("strain")' : 'Ipertrofia ventricolare sinistra (criteri ECG)') + (d.fotoDaVerificare ? ' – da verificare' : ''), d.fotoDaVerificare ? LIV.INFO : LIV.MOD, det.concat(strain ? ['Lo strain si associa a maggiore massa ventricolare e a prognosi peggiore; ST e T sono discordanti al QRS (secondari).'] : []),
+        if (daVer) det.unshift('DA VERIFICARE: ampiezze lette automaticamente dalla foto. Prima di accettare il reperto misura S in V1/V3 e R in V5/V6/aVL con lo strumento «Onda R/S» (o correggile nella scheda Derivazioni) e conferma le misure.');
+        if (ivsStamp) det.push('Criteri ECG di voltaggio: sensibilità bassa (~20–50%), specificità alta (~85–95%); nel giovane e nell\'atleta specificità ridotta (Hancock 2009).');
+        F.add(CAT.CAMERE, 'ivs', (strain ? 'Ipertrofia ventricolare sinistra con alterazioni della ripolarizzazione ("strain")' : ivsStamp ? 'Ipertrofia ventricolare sinistra probabile (criteri di voltaggio)' : 'Ipertrofia ventricolare sinistra (criteri ECG)') + (daVer ? ' – da verificare' : ''), daVer ? LIV.INFO : LIV.MOD, det.concat(strain ? ['Lo strain si associa a maggiore massa ventricolare e a prognosi peggiore; ST e T sono discordanti al QRS (secondari).'] : []),
           'Hancock EW et al. AHA/ACCF/HRS 2009 (parte V); Peguero-Lo Presti JACC 2017', 'Confermare con ecocardiogramma; l\'IVS può simulare/mascherare ischemia (ST secondario): confrontare con ECG precedenti.');
       } else if (strain && strainLeads.length) {
         ctx.strainNoVolt = true;
@@ -933,6 +939,15 @@
               'Meyers 2021 considera ischemico lo STDmax V1–V4 solo se non spiegato da cause secondarie (IVS, BBDx, ritmo stimolato…).',
               'Sospetto ischemico se lo STD compare in V1–V3 a QRS negativo (concordante) o se è nuovo rispetto agli ECG precedenti.'],
             'Meyers HP et al. JAHA 2021; Hancock EW et al. AHA/ACCF/HRS 2009', 'Confronto con ECG precedenti e troponina se clinica compatibile.');
+        } else if (maxAnt <= -0.5 && antWins && !F.has('stemi') && (ctx.rbbb || wideUndef)) {
+          // 1.4.0: con BBDx o QRS ≥ 120 ms lo STD in V1–V3 è di norma SECONDARIO (discordante all'R' terminale):
+          // Meyers 2021 considera ischemico solo lo STDmax non spiegato da cause secondarie → «da confermare»
+          // (segnalazione: falso «OMI posteriore» su BBDx + EAS + BAV I, tracciato reale 4)
+          F.add(CAT.OMI, 'stdmax-v14-sec', 'Sottoslivellamento ST in ' + leadMax + ' con QRS largo/BBDx: OMI posteriore DA CONFERMARE', LIV.ALTO,
+            ['STD ' + f1(maxAnt) + ' mm in ' + leadMax + ' con ' + (ctx.rbbb ? 'BBDx' : 'QRS ≥ 120 ms') + ': nel BBDx ST e T in V1–V3 sono attesi discordanti all\'R\' terminale (secondari).',
+              'Sospetto ischemico se lo STD è sproporzionato, con T POSITIVA (concordante) in V1–V3, se c\'è STD anche in V4–V6 o se è nuovo rispetto all\'ECG precedente.',
+              'Registrare V7–V9 (STE ≥ 0,5 mm) e confrontare con l\'ECG precedente; troponina hs seriata.'],
+            'Meyers HP et al. JAHA 2021;10:e022866; Surawicz B et al. AHA/ACCF/HRS 2009 (parte III)', 'ECG seriati, V7–V9, ecocardiogramma (cinesi posteriore) se la clinica è compatibile.');
         } else if (maxAnt <= -0.5 && antWins && !F.has('stemi') ) {
           F.add(CAT.OMI, 'stdmax-v14', 'STEMI-equivalente: OMI posteriore (sottoslivellamento ST massimo in V1–V4)', LIV.CRIT,
             ['Sottoslivellamento ST massimo in ' + leadMax + ' (' + f1(maxAnt) + ' mm), maggiore che in V5–V6.',
@@ -1290,7 +1305,14 @@
 
     // Sintesi tipo "Queen of Hearts"
     let omi = 'non valutabile';
-    if (F.list.some(f => f.tag === 'omi')) omi = 'positivo';
+    // 1.4.0 (sicurezza): con ST letto automaticamente dalla FOTO e non ancora verificato i criteri OMI/STEMI
+    // diventano «sospetto da verificare» (3 falsi OMI su 7 foto reali: ST secondario a BBDx non riconosciuto,
+    // IVS, ripolarizzazione precoce, J impreciso). Dopo «Ho verificato e corretto le misure» valgono pienamente.
+    if (d.fotoDaVerificare && F.list.some(f => f.tag === 'omi')) {
+      F.list.forEach(f => { if (f.tag === 'omi') { f.titolo = 'SOSPETTO da verificare – ' + f.titolo; if (f.livello === LIV.CRIT) f.livello = LIV.ALTO; f.dettagli = ['ST letto automaticamente dalla foto (non ancora verificato): misura J e J+60 con lo strumento «ST» nelle derivazioni determinanti, inserisci le misure stampate (QRS!) e conferma. Con QRS ≥ 120 ms (BBDx/BBSx) lo ST in V1–V3 può essere secondario.'].concat(f.dettagli || []); } });
+      F.list.sort((a, b) => ORDINE_LIV[a.livello] - ORDINE_LIV[b.livello]);
+      omi = 'sospetto (da verificare)';
+    } else if (F.list.some(f => f.tag === 'omi')) omi = 'positivo';
     else if (F.list.some(f => f.tag === 'nstemi')) omi = 'NSTEMI ad alto rischio';
     else if (ctx.nST >= 10 || ((ctx.lbbb || ctx.paced) && ctx.nST >= 6)) omi = 'negativo';
 
