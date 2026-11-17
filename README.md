@@ -1,4 +1,4 @@
-# ECGcheck 1.4.0 — Analisi ECG assistita (PWA)
+# ECGcheck 1.4.1 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -90,6 +90,11 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.4.1 (17/11/2026) — guadagno sicuro
+
+- Il guadagno cambia rispetto ai 10 mm/mV impostati solo con impulso di taratura riconosciuto in ≥ 2 righe (±10% di 5/20 mm); altrimenti avviso e guadagno invariato (evita ampiezze raddoppiate e false IVS sugli screenshot senza taratura).
+- Limite noto: screenshot con griglia grigia scura a bassa risoluzione non ancora affidabili.
 
 ## Aggiornamento 1.4.0 (16/11/2026) — affidabilità delle foto, misure stampate, calibro mobile
 

@@ -1093,7 +1093,12 @@
     if (hs.length) {
       pulseMm = median(hs);
       const g = [5, 10, 20].reduce((a, b) => Math.abs(b - pulseMm) < Math.abs(a - pulseMm) ? b : a);
-      if (Math.abs(pulseMm - g) / g < 0.18) { if (g !== gainSet) warnings.push('Impulso di taratura di ' + pulseMm.toFixed(1) + ' mm: guadagno impostato a ' + g + ' mm/mV.'); gain = g; }
+      // 1.4.1 (sicurezza): il guadagno si cambia rispetto a quello impostato solo con un impulso riconosciuto in
+      // ≥ 2 righe e altezza entro ±10% di 5/20 mm; un falso «impulso» su uno screenshot senza taratura
+      // (4,6 mm) portava il guadagno a 5 mm/mV → ampiezze raddoppiate, falsa IVS (segnalazione 17/11)
+      const sure = g === gainSet || (hs.length >= 2 && Math.abs(pulseMm - g) / g < 0.10);
+      if (Math.abs(pulseMm - g) / g < 0.18 && sure) { if (g !== gainSet) warnings.push('Impulso di taratura di ' + pulseMm.toFixed(1) + ' mm: guadagno impostato a ' + g + ' mm/mV.'); gain = g; }
+      else if (Math.abs(pulseMm - g) / g < 0.18) warnings.push('Possibile impulso di taratura di ' + pulseMm.toFixed(1) + ' mm (' + g + ' mm/mV?) non confermato: mantenuto il guadagno impostato di ' + gainSet + ' mm/mV. Se il tracciato è registrato a ' + g + ' mm/mV impostalo nella scheda ECG.');
       else warnings.push('Impulso di taratura di ' + pulseMm.toFixed(1) + ' mm (atteso 10 mm): calibrazione o foto non frontale da verificare.');
     } else warnings.push('Impulso di taratura non trovato: calibrazione solo dalla griglia.');
 
