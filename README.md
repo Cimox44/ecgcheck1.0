@@ -1,4 +1,4 @@
-# ECGcheck 1.5.0 — Analisi ECG assistita (PWA)
+# ECGcheck 1.5.1 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -93,6 +93,10 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.5.1 (23/11/2026) — STEMI non perso
+
+- Dalla foto, nelle derivazioni con R/S variabili tra i battiti, lo ST viene proposto se è un sopraslivellamento ≥ 1,5 mm coerente (prima veniva scartato: STEMI inferiore non riconosciuto). I sottoslivellamenti in quelle derivazioni restano esclusi.
 
 ## Aggiornamento 1.5.0 (23/11/2026) — referto tutto automatico
 

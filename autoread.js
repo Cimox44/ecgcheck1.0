@@ -62,7 +62,14 @@
       if (photo && (l.rVar || l.sVar)) lowConf[P + 'r'] = lowConf[P + 'r'] || 'R/S variabili tra i battiti: non proposte, misurale';
       if (l.Q != null && l.Q >= 0.5) set(P + 'q', String(r1(Math.abs(l.Q))));
       // dalla FOTO lo ST non viene applicato nelle derivazioni con QRS molto diversi da battito a battito
-      const stOk = !(photo && (l.rVar || l.sVar || l.stLim));
+      // 1.5.1 (sicurezza, falso NEGATIVO): lo ST è escluso solo se incoerente tra i battiti (stLim, controllo di
+      // dispersione J/J+60 ≤ 0,5 mm in ecgphoto); R/S variabili da sole NON bastano più a escluderlo: in uno STEMI
+      // inferiore evidente II e aVF venivano scartate e restava solo III → STEMI non riconosciuto (segnalazione 23/11)
+      // compromesso: con R/S variabili si accetta lo ST solo se è un SOPRASLIVELLAMENTO ≥ 1,5 mm coerente tra i battiti
+      // (segnale da STEMI che non deve andare perso); i sottoslivellamenti restano esclusi (falsi OMI posteriori
+      // da BBDx/IVS sulle foto 4 e 6)
+      const stOk = !(photo && (l.stLim || ((l.rVar || l.sVar) && !(l.st != null && l.st >= 1.5))));
+      if (stOk && photo && (l.rVar || l.sVar) && l.st != null) lowConf[P + 'st'] = 'R/S variabili tra i battiti, sopraslivellamento coerente: verifica';
       if (!stOk) stEsclusi.push(k);
       if (l.st != null && stOk) { set(P + 'st', String(r1(l.st))); if (photo && conf.livello === 'bassa') lowConf[P + 'st'] = 'ST dalla foto con qualità bassa'; }
       if (l.st60 != null && stOk) set(P + 'st60', String(r1(l.st60)));
