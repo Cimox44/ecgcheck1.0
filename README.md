@@ -1,4 +1,4 @@
-# ECGcheck 1.4.1 — Analisi ECG assistita (PWA)
+# ECGcheck 1.5.0 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -20,6 +20,9 @@ separa le 12 derivazioni, misura R/S/ST/T, FC, PR, QRS, QT, asse → applica i c
 | `criteri.js` | **Pagina «Criteri»**: testo con tabelle sinottiche e fonti (consultabile offline) |
 | `app.js` | Interfaccia, visualizzatore con calibro, lettura automatica, archivio, PDF, notifiche, registro di precisione |
 | `ecgphoto.js` | **Lettore automatico di FOTO ECG** (visione artificiale in JavaScript, offline) |
+| `autoread.js` | **Applicazione automatica** della lettura (affidabilità, valori a bassa affidabilità, nessuna diagnosi con lettura insufficiente) |
+| `twave.js` | **Calcolatore «Onda T»** (iperacuta, ischemica o altra eziologia) |
+| `ddx.js` | **Possibili cause e diagnosi alternative** per ogni reperto anomalo |
 | `ecgpdf.js` | **Lettore automatico di ECG in PDF** + motore di misura del segnale (battiti, R/S/ST/T, intervalli) |
 | `minipdf.js` | Generatore PDF del referto (offline, nessuna libreria esterna) |
 | `lib/pdf.min.mjs`, `lib/pdf.worker.min.mjs` | pdf.js 6.2 di Mozilla (licenza Apache-2.0, `lib/pdfjs-LICENSE.txt`) |
@@ -70,8 +73,8 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 
 ## Flusso d'uso
 
-1. **ECG** → 📷 foto o 📂 PDF → l'app legge il tracciato e mostra la scheda *Lettura automatica*
-   (qualità, misure, punti colorati sul tracciato) → controlla → **Applica**.
+1. **ECG** → 📷 foto o 📂 PDF → l'app legge il tracciato, **applica automaticamente** i valori e genera il referto
+   (banner «Referto automatico – da verificare», valori incerti in giallo) → controlla; «Annulla lettura automatica» se serve.
 2. Se la lettura non riesce o un valore è sbagliato: **Calibra** → strumenti guidati **PR, QRS, Onda, ST, QT, PP, RR, RP**
    (tocchi indicati passo per passo, poi *Applica*); **Marca R / Marca P** per FC, RR, regolarità; trascina i rombi
    di apice R/S letti dalla foto.
@@ -90,6 +93,19 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.5.0 (23/11/2026) — referto tutto automatico
+
+| Novità | Dettaglio |
+|---|---|
+| Flusso automatico | Foto/screenshot/PDF → lettura **applicata subito** → referto con banner «Referto automatico – da verificare»; «Annulla lettura automatica» |
+| Affidabilità | Lettura, ritmo, asse e OMI con livello alta/media/bassa/insufficiente; valori incerti evidenziati in giallo; registro delle correzioni |
+| Modulo OMI | «Nessun criterio OMI nelle N/12 derivazioni lette (non lette: …)», «OMI sospetto – verifica», «Lettura non affidabile»; negativo pieno solo con 12/12 verificate |
+| Foto | Foglio intero con testata stampata, righe spurie, dominante fredda, battiti di consenso per la misura, screenshot grigi 3×4 |
+| Onda T | Nuovo calcolatore (scheda Calcoli) + regola automatica prudente + sezione nella pagina Criteri |
+| Diagnosi alternative | Blocco «Possibili cause e diagnosi alternative» per ogni reperto anomalo (anche nel PDF, forma breve) |
+
+**Come si usa**: 1) 📷/📂 carica l'ECG → 2) leggi il banner (affidabilità) e i valori in giallo → 3) correggi nelle schede o con calibro/strumenti (il referto si aggiorna) → 4) «Ho verificato» → 5) 📄 PDF.
 
 ## Aggiornamento 1.4.1 (17/11/2026) — guadagno sicuro
 

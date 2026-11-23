@@ -1,7 +1,7 @@
 /* =====================================================================
    ECGcheck — Pagina «Criteri»: testo di consultazione (offline)
    Tabelle sinottiche con fonte e data di ogni sezione.
-   Revisione: 09/11/2026 (criteri 2026.11.3)
+   Revisione: 23/11/2026 (criteri 2026.11.7)
    ===================================================================== */
 (function (root) {
   'use strict';
@@ -54,6 +54,33 @@
           ['Smith-modified Sgarbossa', 'sostituisce il 3° criterio con STE discordante / S ≥ 0,25', 'sens. 80–91%, spec. 90–99%; validato anche nel ritmo da PM (VD)'],
           ['Barcellona (2020)', 'deviazione ST concordante ≥ 1 mm in qualunque derivazione, oppure discordante ≥ 1 mm con max(R|S) ≤ 6 mm', 'solo BBSx; validazione esterna limitata']
         ])
+    },
+    {
+      id: 'ondat', titolo: 'Onda T: iperacuta, ischemica o di altra eziologia (calcolatore «Onda T»)', data: '11/2026',
+      fonte: 'Meyers HP, Smith SW et al. JACC Adv 2025 (doi:10.1016/j.jacadv.2025.102120) e JACC 2025 (ACC.25, doi:10.1016/S0735-1097(25)02430-1); Ann Emerg Med 2023;82:194-202; de Winter NEJM 2008; de Zwaan Am Heart J 1982; Rautaharju AHA/ACCF/HRS 2009 Part IV; Kosuge JACC 2010; Marcus Circulation 2010; Montague CJASN 2008; ESC 2023 ACS; ESC 2025 Pericarditi',
+      html: '<p>Le <b>T iperacute</b> sono un OMI-equivalente (ACC 2022 ECDP): T <b>voluminose rispetto al QRS</b> (area/ampiezza), <b>larghe alla base</b> e <b>simmetriche</b>, in ≥ 2 derivazioni contigue, spesso con reciprocità e ST «dritto». Esiste una definizione oggettiva pubblicata ma <b>le soglie per derivazione non sono pubblicate</b>: ECGcheck usa una soglia OPERATIVA dichiarata come non validata e propone solo «sospetto – verifica».</p>' +
+        T(['Studio', 'Definizione', 'Accuratezza', 'Limiti'], [
+          ['Meyers, Smith et al. JACC Adv 2025', 'area della T / ampiezza del QRS + simmetria (picco→fine vs inizio→picco), ≥ 2 contigue, punteggio medio ≥ 0,7; QRS < 110 ms', 'senza STEMI (n = 1300): Sp 98,4%, Se 20,7%, VPP 47,4%, LR+ 12,5', 'retrospettivo, 5 centri; soglie per derivazione non pubblicate; esclusi QRS ≥ 110 ms'],
+          ['Meyers et al. JACC 2025 (abstract ACC.25)', 'area T/QRS con soglie per derivazione + simmetria (picco ≤ 67% di J–T)', 'Se 37%, Sp 98% (tutti); Se 23%, Sp 98% senza STEMI', 'abstract; validazione prospettica necessaria'],
+          ['Ann Emerg Med 2023;82:194', 'sola AMPIEZZA della T > 95° percentile per derivazione', 'NON utile (LR+ significativi solo in III, aVR, V1)', 'la sola ampiezza non basta']
+        ]) +
+        T(['Soglia operativa ECGcheck (NON validata)', 'Valore'], [['Periferiche (escl. aVR)', 'T ≥ 2,5 mm e T/(R+|S|) ≥ 0,75'], ['Precordiali', 'T ≥ 6 mm e T/(R+|S|) ≥ 1,0'], ['Condizioni', '≥ 2 contigue; QRS < 110 ms; niente BBS/pacing/WPW/IVS'], ['Esito', '«Possibili T iperacute – OMI da escludere» (mai «OMI positivo»)']]) +
+        T(['T alte: diagnosi differenziale', 'Elementi distintivi'], [
+          ['T iperacute (OMI)', 'larghe alla base, simmetriche, sproporzionate al QRS, reciprocità (aVL nelle inferiori), evoluzione dinamica'],
+          ['Iperkaliemia', 'strette, appuntite «a tenda», base stretta; P piatte, QRS largo; l\'ECG può essere normale con K alto'],
+          ['Ripolarizzazione precoce', 'notch/slur del J, ST concavo, R alte, T proporzionate, stabile nel tempo'],
+          ['IVS', 'T proporzionate a QRS ampi; strain laterale'],
+          ['BBS / pacing', 'T discordanti al QRS (secondarie): usare Sgarbossa-Smith/Barcellona'],
+          ['Vagotonia / giovani', 'bradicardia, T alte in V2–V4 con QRS ampi, nessun sintomo'],
+          ['de Winter', 'STD ascendente 1–3 mm al J in V1–V6 con T alte simmetriche (± STE aVR): occlusione IVA prossimale']
+        ]) +
+        T(['T negative/bifasiche', 'Ischemiche', 'Non ischemiche'], [
+          ['Morfologia', 'simmetriche, profonde, in un territorio coronarico; Wellens A (bifasiche +/− V2–V3) e B (negative profonde V2–V3) dopo dolore risolto, R conservate, senza Q', 'asimmetriche (strain), giganti ≥ 10 mm V4–V6 (CMI apicale), diffuse con T+ in aVR e senza T− in V1 (Takotsubo)'],
+          ['Pseudonormalizzazione', 'T prima negative che diventano positive durante il dolore = riocclusione', '—'],
+          ['Altre cause', 'riperfusione (anche dopo PCI/trombolisi)', 'miocardite/pericardite (3° stadio), EP (V1–V4 + III, tachicardia), memoria cardiaca (pacing, BBS intermittente, WPW), eventi cerebrali (giganti e larghe, QT lungo), ARVC (V1–V3 > 14 anni senza BBDx), pattern giovanile (< 16 anni), ipoK (U), farmaci, secondarie (BB, IVS, pacing)'],
+          ['Normali', '—', 'T negative isolate in aVR, V1 e III'],
+          ['Post-cardiochirurgia', 'T iperacute/STE in un territorio di bypass = occlusione del graft', 'T negative diffuse frequenti nei primi giorni (pericardite, edema, ipotermia): confronto con ECG pre/post-operatori']
+        ]) + '<p class="hint">Il calcolatore (scheda Calcoli → Onda T) usa i valori della scheda Derivazioni, chiede simmetria/base larga e il contesto, mostra i passi, gli elementi a favore e contro e una conclusione prudente; «Riporta nel referto» imposta i pattern T iperacute/Wellens.</p>'
     },
     {
       id: 'peric', titolo: 'Pericardite acuta e pericardite vs OMI', data: '11/2026',

@@ -106,7 +106,7 @@
     </section>
 
     <!-- ======================= CALCOLATORI ======================= -->
-    <section id="tab-calc" class="tab"><div id="calcAxis"></div><div id="calcST"></div><div id="calcQTc"></div></section>
+    <section id="tab-calc" class="tab"><div id="calcAxis"></div><div id="calcST"></div><div id="calcQTc"></div><div id="calcTwave"></div></section>
 
     <!-- ======================= CRITERI (testo) ======================= -->
     <section id="tab-crit" class="tab"><div id="critView"></div></section>
@@ -155,7 +155,7 @@
     <div class="sheet-body">
       <button data-goto="arch">🗂 Archivio referti</button>
       <button data-goto="crit">📚 Criteri ECG (testo)</button>
-      <button data-goto="calc">🧮 Calcolatori: asse, ST, QTc</button>
+      <button data-goto="calc">🧮 Calcolatori: asse, ST, QTc, onda T</button>
       <button data-goto="cat">✅ Diagnosi supportate</button>
       <button data-goto="info">ℹ️ Criteri, fonti e revisioni</button>
       <button id="menuNew">＋ Nuovo ECG</button>
@@ -169,6 +169,9 @@
   <script src="minipdf.js"></script>
   <script src="ecgpdf.js"></script>
   <script src="ecgphoto.js"></script>
+  <script src="autoread.js"></script>
+  <script src="twave.js"></script>
+  <script src="ddx.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

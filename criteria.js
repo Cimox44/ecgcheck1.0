@@ -8,11 +8,14 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.4.1',
-    criteriaVersion: '2026.11.6',
-    lastReview: '2026-11-16',
-    nextReview: '2026-11-23',
+    version: '1.5.0',
+    criteriaVersion: '2026.11.7',
+    lastReview: '2026-11-23',
+    nextReview: '2026-11-30',
     riferimenti: [
+      'Meyers HP, Smith SW et al. Hyperacute T waves are specific for occlusion MI even without diagnostic ST elevation. JACC Adv 2025, doi:10.1016/j.jacadv.2025.102120 (T iperacute: specificità 98,4%, sensibilità 20,7%; soglie per derivazione non pubblicate)',
+      'Hyperacute T wave in the early diagnosis of AMI. Ann Emerg Med 2023;82:194-202, doi:10.1016/j.annemergmed.2022.12.003 (la sola ampiezza della T non è diagnostica)',
+      'Rautaharju PM et al. AHA/ACCF/HRS Recommendations Part IV: ST segment, T and U waves, QT. Circulation 2009;119:e241-e250',
       'Mills NL, Newby LK, Zaman S et al. Fifth Universal Definition of Myocardial Infarction (2026). ESC/ACC/AHA/WHF. Eur Heart J 2026;47:5911-5958 (online 28/08/2026), doi:10.1093/eurheartj/ehag101',
       'Thygesen K et al. Fourth Universal Definition of Myocardial Infarction (2018). Eur Heart J 2019;40:237-269 (soglie ECG di STE utilizzate dal motore)',
       'Byrne RA et al. 2023 ESC Guidelines for the management of acute coronary syndromes. Eur Heart J 2023;44:3720-3826',
@@ -405,6 +408,13 @@
       F.add(CAT.RITMO, 'qrs-largo', 'Ritmo a QRS largo — onde P da definire', LIV.ALTO,
         ['QRS ≥ 120 ms' + (hr ? ', FC ' + r0(hr) + '/min' : '') + '. Indica le onde P (sinusali, assenti, dissociate…) per classificare il ritmo.',
           'Con P sinusali condotte 1:1 si tratta di ritmo sinusale con disturbo di conduzione intraventricolare.'], 'AHA/ACCF/HRS 2009');
+    } else if (!P && hr !== null && d.autoConf && (d.autoConf.ritmo === 'bassa' || d.autoConf.ritmo === 'insufficiente') && !(d.manual || {})['ritmo.regolarita']) {
+      // 1.5.0 (sicurezza): ritmo letto automaticamente con affidabilità bassa (onde P non riconosciute, battiti
+      // persi o in più): nessuna classificazione automatica (foto 9: falso «irregolarmente irregolare»)
+      ctx.ritmo = 'nc';
+      F.add(CAT.RITMO, 'ritmo-nc', 'Ritmo non classificato – lettura automatica a bassa affidabilità: verifica', LIV.MOD,
+        ['FC ' + r0(hr) + '/min dalla lettura automatica.' + (m.rrStats && m.rrStats.n > 2 ? ' RR ' + r0(m.rrStats.min) + '–' + r0(m.rrStats.max) + ' ms' + (reg === 'irregolare' ? ': variabili (battito perso/in più nella lettura? oppure FA/extrasistoli)' : '') + '.' : ''),
+          'Indica le onde P (sinusali, assenti, flutter…) e la regolarità nella scheda Ritmo, oppure usa «Marca R / Marca P»: il referto si aggiorna subito.'], 'AHA/ACCF/HRS 2009');
     } else if (!P && reg === 'irregolare' && hr !== null) {
       ctx.ritmo = 'irregolare';
       F.add(CAT.RITMO, 'irr-nop', 'Ritmo irregolarmente irregolare — onde P da definire', LIV.ALTO,
@@ -1087,6 +1097,35 @@
     if (hyp.length) F.add(CAT.OMI, 'iperacute', 'STEMI-equivalente: onde T iperacute ' + hyp.join(', '), LIV.CRIT,
       ['T ampie alla base, simmetriche, voluminose rispetto al QRS: fase precoce di occlusione.', 'DD: iperkaliemia (T strette e appuntite), ripolarizzazione precoce (QRS di alto voltaggio).'],
       'ACC 2022 ECDP; Smith SW', 'ECG seriati ogni 15–30 min; considerare coronarografia urgente.', 'omi');
+    // 1.5.0 – T IPERACUTE: regola AUTOMATICA prudente (solo «sospetto – verifica», mai «OMI positivo»).
+    // Le definizioni oggettive pubblicate (Meyers/Smith, JACC 2025 abstract ACC.25 e JACC Adv 2025;
+    // doi:10.1016/j.jacadv.2025.102120: area della T rispetto all'ampiezza del QRS + simmetria, ≥ 2 derivazioni
+    // contigue, QRS < 110 ms; specificità ~98%, sensibilità ~21–37%) NON pubblicano le soglie per derivazione:
+    // il motore usa quindi una soglia OPERATIVA sul rapporto di ampiezza T/QRS, dichiarata come non validata.
+    if (!hyp.length && !ctx.lbbb && !ctx.paced && !ctx.wpw && !ctx.lvh && !(m.qrs !== null && m.qrs >= 110)) {
+      const prec = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
+      const tq = {};
+      LEADS.forEach(l => {
+        if (l === 'aVR') return;
+        const T = amp(d, l, 't'), R = amp(d, l, 'r'), S = amp(d, l, 's');
+        if (T === null || R === null || T <= 0) return;
+        const qrs = Math.abs(R) + Math.abs(S || 0); if (qrs < 1) return;
+        const lim = prec.includes(l) ? { rat: 1.0, min: 6 } : { rat: 0.75, min: 2.5 };
+        if (T >= lim.min && T / qrs >= lim.rat) tq[l] = T / qrs;
+      });
+      const pairs = CONTIG.filter(c => tq[c[0]] && tq[c[1]]);
+      if (pairs.length) {
+        const ll = Array.from(new Set([].concat.apply([], pairs)));
+        const terr = ll.some(l => ['II', 'III', 'aVF'].includes(l)) ? 'inferiori' : ll.some(l => ['V1', 'V2', 'V3', 'V4'].includes(l)) ? 'anteriori' : 'laterali';
+        F.add(CAT.OMI, 'tiper-auto', 'Possibili onde T iperacute ' + terr + ' (rilevate automaticamente) – OMI da escludere', LIV.ALTO,
+          ['T voluminose rispetto al QRS in ' + ll.map(l => l + ' (T/QRS ' + tq[l].toFixed(2).replace('.', ',') + ')').join(', ') + ', derivazioni contigue.',
+            'Soglia OPERATIVA di ECGcheck (T/QRS ≥ 0,75 periferiche con T ≥ 2,5 mm; ≥ 1,0 precordiali con T ≥ 6 mm): NON è un cut-off validato. Le definizioni pubblicate (Meyers, Smith et al. 2025) usano area della T/ampiezza del QRS e simmetria (picco della T ≤ 67% dell\'intervallo J–T) con soglie per derivazione non pubblicate.',
+            'Verifica: T larghe alla base, simmetriche, ST «dritto», reciprocità (aVL per le inferiori), confronto con ECG precedenti e ECG seriati ogni 15–30 min. Calcolatore «Onda T» nella scheda Calcoli.',
+            'Mimics: iperkaliemia (T strette, a tenda), ripolarizzazione precoce, IVS, bassi voltaggi del QRS (rapporto falsamente alto), vagotonia.'],
+          'Meyers HP, Smith SW et al. JACC Adv 2025 (doi:10.1016/j.jacadv.2025.102120); ACC 2022 ECDP; ESC 2023 ACS', 'ECG seriati ogni 15–30 min, troponina, valutazione medica immediata se sintomi: non attendere la conferma automatica.', 'omiSosp');
+        ctx.tIperAuto = ll;
+      }
+    }
     if (p.distorsioneTerminale) F.add(CAT.OMI, 'distorsione', 'Distorsione terminale del QRS in V2–V3', LIV.CRIT,
       ['Assenza sia di onda S sia di onda J in V2 o V3: non compatibile con ripolarizzazione precoce, depone per occlusione IVA.'],
       'Lewis M, Smith SW et al.; Armstrong EJ 2012', 'Trattare come OMI della IVA.', 'omi');
@@ -1299,12 +1338,17 @@
     analizzaQT(d, m, F, ctx);
 
     if (ctx.wpw) F.add(CAT.OMI, 'wpw-st', 'Valutazione ischemica limitata dalla pre-eccitazione', LIV.INFO, ['ST-T secondario alla pre-eccitazione; onde delta negative possono simulare Q.']);
-    if (ctx.nST !== undefined && ctx.nST > 0 && ctx.nST < 12) F.add(CAT.QUALITA, 'st-incompleto', 'Analisi ST su ' + ctx.nST + '/12 derivazioni', LIV.INFO, ['Completa la tabella delle derivazioni per un\'analisi OMI completa.']);
+    if (ctx.nST !== undefined && ctx.nST > 0 && ctx.nST < 12) F.add(CAT.QUALITA, 'st-incompleto', 'Analisi ST su ' + ctx.nST + '/12 derivazioni', LIV.INFO, ['Derivazioni senza ST affidabile: ' + LEADS.filter(l => st(d, l) === null).join(', ') + '. Un OMI limitato a queste derivazioni NON è escluso: misura lo ST con lo strumento «ST» o con il calibro.']);
 
     F.list.sort((a, b) => ORDINE_LIV[a.livello] - ORDINE_LIV[b.livello]);
 
     // Sintesi tipo "Queen of Hearts"
     let omi = 'non valutabile';
+    // 1.5.0 – FLUSSO AUTOMATICO: il modulo OMI valuta le derivazioni lette in modo affidabile e dichiara sempre
+    // quante e quali sono state valutate; mai un «negativo» pieno con derivazioni mancanti o non verificate
+    const lette = LEADS.filter(l => st(d, l) !== null);
+    const nonLette = LEADS.filter(l => st(d, l) === null);
+    const auto = d.autoConf || null; // { livello: 'alta'|'media'|'bassa'|'insufficiente', motivo, ritmo, asse }
     // 1.4.0 (sicurezza): con ST letto automaticamente dalla FOTO e non ancora verificato i criteri OMI/STEMI
     // diventano «sospetto da verificare» (3 falsi OMI su 7 foto reali: ST secondario a BBDx non riconosciuto,
     // IVS, ripolarizzazione precoce, J impreciso). Dopo «Ho verificato e corretto le misure» valgono pienamente.
@@ -1314,7 +1358,17 @@
       omi = 'sospetto (da verificare)';
     } else if (F.list.some(f => f.tag === 'omi')) omi = 'positivo';
     else if (F.list.some(f => f.tag === 'nstemi')) omi = 'NSTEMI ad alto rischio';
-    else if (ctx.nST >= 10 || ((ctx.lbbb || ctx.paced) && ctx.nST >= 6)) omi = 'negativo';
+    else if (auto && auto.livello === 'insufficiente') omi = 'lettura non affidabile';
+    else if (F.list.some(f => f.tag === 'omiSosp')) omi = 'sospetto (da verificare)';
+    else if (lette.length === 12 && !d.fotoDaVerificare) omi = 'negativo';
+    else if (lette.length > 0) omi = 'nessun criterio';
+    else if (auto) omi = 'lettura non affidabile';
+    // affidabilità della sintesi automatica (ritmo, asse, OMI): dichiarata sempre quando i valori vengono dalla lettura automatica
+    const affid = auto ? {
+      lettura: auto.livello, motivo: auto.motivo || '',
+      ritmo: auto.ritmo || auto.livello, asse: auto.asse || auto.livello,
+      omi: omi === 'lettura non affidabile' ? 'insufficiente' : lette.length === 12 && auto.livello === 'alta' ? 'media' : lette.length >= 8 ? (auto.livello === 'bassa' ? 'bassa' : 'media') : 'bassa'
+    } : null;
 
     const ritmoF = F.list.find(f => f.cat === CAT.RITMO && f.id !== 'extrasistoli' && f.id !== 'tvns' && f.id !== 'fa-150' && f.id !== 'flutter-11');
     return {
@@ -1323,6 +1377,7 @@
       reperti: F.list,
       sintesi: {
         omi,
+        nLette: lette.length, lette, nonLette, affidabilita: affid,
         ritmo: ritmoF ? ritmoF.titolo : 'Ritmo non classificato',
         critici: F.list.filter(f => f.livello === LIV.CRIT).length
       },

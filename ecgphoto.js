@@ -62,6 +62,7 @@
   // 1.3.1: canale della griglia secondo il colore: rosa/rossa (carta), blu/azzurra, verde o grigia
   // (screenshot di visualizzatori e app: PMcardio, cartelle cliniche, PDF esportati come immagine)
   let GRID = 'rosa';
+  let SMALL = false; // 1.5.0: immagine piccola ingrandita (screenshot)
   function gridHue(img) {
     const { width: W, height: H, data } = img; const st = Math.max(1, Math.floor(Math.sqrt(W * H / 200000)));
     let rg = 0, br = 0, gr = 0, n = 0;
@@ -73,6 +74,9 @@
     if (!n) return 'rosa';
     rg /= n; br /= n; gr /= n;
     if (rg >= 4 && rg >= br && rg >= gr) return 'rosa';
+    // 1.5.0: FOTO grande con dominante fredda (bilanciamento del bianco, caso 9b: carta rosa letta «blu») → la
+    // griglia blu vera degli screenshot/visualizzatori è satura (B−R ≫ 20); sotto questa soglia vale la carta rosa
+    if (br >= 4 && br >= gr && br < 20 && Math.max(W, H) >= 1500 && rg > -8) return 'rosa';
     if (br >= 4 && br >= gr) return 'blu';
     if (gr >= 4) return 'verde';
     return rg > 1.5 ? 'rosa' : 'grigio';
@@ -313,12 +317,22 @@
       if (sc < 1) continue;
       // 1.3.1 (immagini digitali): almeno un lato verticale deve collegare il plateau alla PROPRIA linea di
       // base; l'impulso della riga vicina visto "da lontano" ha i lati rivolti verso l'altra riga
-      if (GRID !== 'rosa' || baseBefore === 'after') {
+      // 1.5.0: solo per le immagini digitali piccole (screenshot ingranditi): in una FOTO con dominante blu (caso 9b,
+      // griglia letta come «blu») i lati verticali dell'impulso sono troppo sottili per essere visti
+      if ((GRID !== 'rosa' && SMALL) || baseBefore === 'after') {
         const leg = xc => { let best = 0; const ya2 = Math.round(Math.min(c.y, bl) + pxmm * 1), yb2 = Math.round(Math.max(c.y, bl) - pxmm * 1); if (yb2 <= ya2) return 1; for (let x = Math.round(xc - pxmm * 0.6); x <= Math.round(xc + pxmm * 0.6); x++) { let n = 0; for (let y = ya2; y <= yb2; y++) if (at(x, y)) n++; best = Math.max(best, n / (yb2 - ya2 + 1)); } return best; };
         if (Math.max(leg(c.x), leg(c.j)) < 0.6) continue;
       }
       const hmm = Math.abs(h) / pxmm;
-      const score = sc * 0.6 + (hmm >= 7.5 && hmm <= 12.5 ? 1.2 : hmm >= 4 && hmm <= 6 ? 0.6 : hmm >= 17 && hmm <= 22 ? 0.6 : 0);
+      // 1.5.0: impulso a INIZIO riga (diritto, base dopo): prima dell'impulso non c'è traccia (al più il "piede"
+      // di ~1–2 mm); un plateau con traccia continua prima e dopo è un'onda o una linea di griglia (caso 9b)
+      let pen = 0;
+      if (dir > 0 && after && baseBefore !== 'after') {
+        let hit = 0, tt = 0;
+        for (let x = Math.max(0, Math.round(c.x - pxmm * 12)); x < Math.round(c.x - pxmm * 3); x++) { tt++; for (let y = Math.round(bl - pxmm * 1.5); y <= Math.round(bl + pxmm * 1.5); y++) if (at(x, y)) { hit++; break; } }
+        if (tt > pxmm * 3 && hit / tt > 0.5) pen = 1.5;
+      }
+      const score = -pen + sc * 0.6 + (hmm >= 7.5 && hmm <= 12.5 ? 1.2 : hmm >= 4 && hmm <= 6 ? 0.6 : hmm >= 17 && hmm <= 22 ? 0.6 : 0);
       if (!best || score > best.score) best = { h: Math.abs(h), len: c.j - c.x + 1, xStart: c.x, xEnd: c.j + pxmm * 0.6, base: bl, ok: true, score };
     }
     return best;
@@ -823,7 +837,25 @@
   }
 
   // selezione delle righe vere: con impulso di taratura (se presente nella maggior parte) e spaziatura regolare
-  function selectRows(rows, pxmm, nWanted) {
+  // 1.5.0 – frazione di campioni "di griglia" (colore della griglia) in una banda di ±4 mm attorno alla riga
+  function gridPresence(ch, y, pxmm, xa, xb) {
+    const { W, H, rg } = ch; let n = 0, g = 0;
+    const ya = Math.max(0, Math.round(y - pxmm * 4)), yb = Math.min(H - 1, Math.round(y + pxmm * 4));
+    const sx = Math.max(2, Math.round(pxmm / 2)), sy = Math.max(1, Math.round(pxmm / 3));
+    for (let yy = ya; yy <= yb; yy += sy) for (let x = Math.max(0, Math.round(xa)); x <= Math.min(W - 1, Math.round(xb)); x += sx) { n++; if (rg[yy * W + x] > 14) g++; }
+    return n ? g / n : 0;
+  }
+  // 1.5.0 – riga "di testo": la traccia ECG è continua (quasi ogni colonna occupata, escursione verticale
+  // modesta tra colonne vicine); una riga di caratteri è fatta di tratti brevi separati da spazi bianchi regolari
+  function textLike(r, pxmm) {
+    const a = Math.max(0, Math.round(r.ext.x0)), b = Math.round(r.ext.x1); if (b - a < pxmm * 10) return 0;
+    let gaps = 0, inGap = false, empty = 0;
+    for (let x = a; x <= b; x++) { const e = !r.cols[x]; if (e) { empty++; if (!inGap) { gaps++; inGap = true; } } else inGap = false; }
+    const perCm = gaps / ((b - a) / (pxmm * 10));
+    // > 4 interruzioni per cm e > 25% di colonne vuote = scritte
+    return perCm > 4 && empty / (b - a + 1) > 0.25 ? Math.min(1, perCm / 8) : 0;
+  }
+  function selectRows(rows, pxmm, nWanted, opts_dbg) {
     if (rows.length < 2) return rows;
     let cand = rows;
     // 1.3.3: vale la disposizione della maggioranza (impulso a inizio riga OPPURE a fine riga): un falso
@@ -848,8 +880,54 @@
         const w = withP.reduce((b, q) => Math.abs(q.y - r.y) < Math.abs(b.y - r.y) ? q : b);
         // a un numero intero di passi (anche le righe vicine possono non avere l'impulso riconosciuto)
         const d = Math.abs(r.y - w.y), k = Math.max(1, Math.round(d / step));
-        return Math.abs(d - k * step) < step * 0.2;
+        // 1.5.0: tolleranza 20% → 12% e copertura ≥ 50% per le righe esterne (testata stampata sopra la prima riga,
+        // caso 9: riga di testo a 0,82 passi dalla derivazione I accettata come riga del tracciato)
+        const outer = r.y < Math.min.apply(null, withP.map(q => q.y)) || r.y > Math.max.apply(null, withP.map(q => q.y));
+        if (outer && r.ext.cov < 0.5) return false;
+        return Math.abs(d - k * step) < step * 0.12;
       });
+    }
+    // 1.5.0 – senza impulsi riconosciuti (screenshot, impulso tagliato, foglio intero con testata): le righe vere
+    // sono equidistanti e quasi continue; le "righe" spurie (onde R/T alte tra due righe, scritte, linee di
+    // griglia da 5 mm) cadono fuori passo → si sceglie il passo che allinea il maggior numero di righe continue
+    else if (rows.length >= 3) {
+      const good = rows.filter(r => r.ext.cov >= 0.85 && r.pts.length);
+      if (good.length >= 2) {
+        let best = null;
+        // 1.5.0: ogni riga continua fa da àncora (una linea di piè di pagina continua non deve guidare la scelta)
+        good.forEach(anchor => {
+        const steps = [];
+        good.forEach(g => { if (g === anchor) return; const d = Math.abs(g.y - anchor.y); for (let k = 1; k <= 4; k++) { const st = d / k; if (st >= pxmm * 12 && st <= pxmm * 50) steps.push(st); } });
+        const chain = st => {
+          const al = [anchor];
+          [-1, 1].forEach(dir => {
+            let last = anchor.y, s = st, miss = 0;
+            for (;;) {
+              const exp = last + dir * s;
+              const c = rows.filter(r => !al.includes(r) && Math.abs(r.y - exp) < s * 0.15).sort((a, b) => (b.ext.cov - a.ext.cov) || (Math.abs(a.y - exp) - Math.abs(b.y - exp)))[0];
+              if (c) { s = 0.5 * s + 0.5 * Math.abs(c.y - last); last = c.y; al.push(c); miss = 0; }
+              else if (++miss <= 1) last = exp; else break;
+              if (last < 0 || last > 1e6) break;
+            }
+          });
+          return al.sort((a, b) => a.y - b.y);
+        };
+        steps.forEach(st => {
+          const al = chain(st);
+          const sc = al.reduce((a, r) => a + (r.ext.cov >= 0.85 ? 1 : 0.3), 0);
+          if (!best || sc > best.sc + 0.01 || (Math.abs(sc - best.sc) <= 0.01 && st > best.st)) best = { st, sc, al };
+        });
+        });
+        if (best && best.al.filter(r => r.ext.cov >= 0.85).length >= 2) {
+          // passo raffinato e righe esterne a bassa copertura (testata, piè di pagina) escluse
+          // righe "piatte" (linea di griglia da 5 mm con le croci, bordo): escursione 2–98° percentile < 2,5 mm
+          // conteggio degli "eventi" (escursioni ≥ 2,5 mm dalla mediana separate da ≥ 5 mm): una riga ECG ne ha
+          // uno per battito, una linea di griglia con le croci al più 1–2 (artefatti)
+          const events = r => { const ys = r.pts.map(p => p[1]); const md = median(ys); let cnt = 0, lastX = -1e9; r.pts.forEach(p => { if (Math.abs(p[1] - md) >= pxmm * 2.5 && p[0] - lastX > pxmm * 5) { cnt++; lastX = p[0]; } }); return cnt; };
+          cand = best.al.filter(r => r.ext.cov >= 0.6 && events(r) >= 3);
+          if (opts_dbg) console.log('passo righe', best.st.toFixed(1), cand.map(r => Math.round(r.y)).join(','));
+        }
+      }
     }
     // righe troppo vicine (< 60% della spaziatura mediana): tiene la più "densa"
     const ys = cand.map(r => r.y);
@@ -902,6 +980,7 @@
     // 1.3.1: screenshot / immagini piccole → ingrandimento; colore della griglia rilevato automaticamente
     let upK = opts._upK || 1;
     if (!opts._flipped && Math.max(img.width, img.height) < 1500) { upK = Math.min(3, 2200 / Math.max(img.width, img.height)); img = upscale(img, upK); }
+    SMALL = upK > 1;
     GRID = gridHue(img);
     const ch0 = channels(img);
     const pm0 = paperMask(ch0);
@@ -994,12 +1073,13 @@
 
     // 6) righe e capovolgimento (180°)
     const prefRows = profKey !== 'auto' ? PROFILES[profKey].righe : null;
-    const analyseRows = (dmask) => {
-      const ys = findRows(dmask, outW, outH, pxmm);
+    const analyseRows = (dmask, forceYs) => {
+      const ys = forceYs || findRows(dmask, outW, outH, pxmm);
       const cc = components(dmask, outW, outH);
       const pls = ys.map(y => ({ L: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), 1), R: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, -1), RU: pulseFromMask(dmask, outW, outH, y, pxmm, Math.max(0, outW - pxmm * 45), outW, 1, true), LI: pulseFromMask(dmask, outW, outH, y, pxmm, 0, Math.min(outW, pxmm * 45), -1, 'after') }));
       // 1.3.1: lo stesso impulso fisico può essere visto come impulso ROVESCIATO della riga sopra e come
       // impulso DIRITTO della riga sotto (o viceversa): vale quello con altezza più vicina a 5/10/20 mm
+      if (opts.debug && forceYs) console.log('pls0', JSON.stringify(pls.map(o => ({ L: o.L && [Math.round(o.L.xStart), +(o.L.h / pxmm).toFixed(1)], LI: o.LI && [Math.round(o.LI.xStart), +(o.LI.h / pxmm).toFixed(1)] }))));
       const offStd = o => { const hm = o.h / pxmm; return Math.min.apply(null, [5, 10, 20].map(g => Math.abs(hm - g) / g)); };
       for (let i = 0; i + 1 < ys.length; i++) {
         const a = pls[i].R, b = pls[i + 1].RU;
@@ -1055,7 +1135,23 @@
       }
       rows.forEach(r => { r.ext = rowExtent(r.cols, pxmm); r.pts = r.ext.x0 >= 0 ? colsToPoints(r.cols, r.th, r.ext.x0, r.ext.x1) : []; });
       rows = rows.filter(r => r.ext.x1 - r.ext.x0 > pxmm * 40);
-      return selectRows(rows, pxmm, prefRows);
+      // 1.5.0 – TESTATA STAMPATA (foglio intero: righe di testo anagrafica/misure sopra il tracciato): le
+      // scritte formano "righe" dense ma fuori dalla carta millimetrata e senza traccia continua → escluse
+      rows.forEach(r => { r.gridF = gridPresence(ch, r.y, pxmm, r.ext.x0, r.ext.x1); r.textF = textLike(r, pxmm); });
+      if (opts.debug) console.log('righe', JSON.stringify(rows.map(r => ({ y: Math.round(r.y), g: +r.gridF.toFixed(2), t: +r.textF.toFixed(2), x0: Math.round(r.ext.x0), x1: Math.round(r.ext.x1), cov: +r.ext.cov.toFixed(2) }))));
+      // (filtro per presenza di griglia provato e scartato: l'ombra al centro della foto 3 abbassa la griglia
+      // visibile della riga aVR; resta solo l'esclusione delle righe "di testo")
+      if (rows.length > 3) rows = rows.filter(r => !(r.textF > 0.5));
+      const selR = selectRows(rows, pxmm, prefRows, opts.debug);
+      // 1.5.0: righe spurie eliminate (onde alte tra due righe, testata) e nessun impulso riconosciuto → gli impulsi
+      // e l'inizio delle tracce si ricalcolano con le sole righe vere (le righe spurie "rubano" gli impulsi, caso 9b)
+      const nPl = a => Math.max(a.filter(r => r.pulseL).length, a.filter(r => r.pulseRU).length);
+      if (!forceYs && selR.length >= 3 && selR.length < ys.length && nPl(selR) < selR.length / 2) {
+        const again = analyseRows(dmask, selR.map(r => r.y));
+        if (opts.debug) console.log("rianalisi", again.length, JSON.stringify(again.map(r => [Math.round(r.y), !!r.pulseL, !!r.pulseRU, !!r.pulseR])));
+        if (again.length === selR.length && nPl(again) > nPl(selR)) return again;
+      }
+      return selR;
     };
     let rows = analyseRows(dm);
     let ps = rows.map(r => ({ L: r.pulseL, R: r.pulseR, RU: r.pulseRU, LI: r.pulseLI }));
@@ -1064,6 +1160,7 @@
     // capovolto di 180° se gli impulsi sono ROVESCIATI: a destra (taratura a inizio riga) o a sinistra
     // (taratura a fine riga, es. screenshot di visualizzatori ruotati); impulsi diritti = orientamento corretto
     const upEv = pulsesL + pulsesRU, downEv = pulsesR + pulsesLI;
+    if (opts.debug) console.log("impulsi", JSON.stringify({ pulsesL, pulsesR, pulsesRU, pulsesLI, rows: rows.map(r => Math.round(r.y)), L: ps.map(o => o.L && [Math.round(o.L.xStart), +(o.L.h / pxmm).toFixed(1)]), R: ps.map(o => o.R && [Math.round(o.R.xStart), +(o.R.h / pxmm).toFixed(1)]), LI: ps.map(o => o.LI && [Math.round(o.LI.xStart), +(o.LI.h / pxmm).toFixed(1)]) }));
     const wantFlip = opts.flip === true || (opts.flip !== false && downEv > upEv);
     // 1.3.1: immagini digitali o taratura a fine riga: il capovolgimento si fa ruotando di 180° l'immagine di
     // partenza e ripetendo l'intera lettura (più robusto del ribaltamento della sola finestra raddrizzata)
@@ -1110,13 +1207,15 @@
       if (!prof) { warnings.push('Righe trovate: ' + n + '. Formato non riconosciuto: seleziona il profilo dell\'apparecchio.'); prof = PROFILES.std6x2; }
     }
     if (rows.length < prof.righe) warnings.push('Righe trovate ' + rows.length + ' su ' + prof.righe + ' attese per il profilo scelto.');
-    const leads = {}, overlay = [], segs = [], limLeads = [];
+    let leads = {}, overlay = [], segs = [], limLeads = [];
     let rhythmPts = null, rhythmName = null;
     // inizio comune delle derivazioni: fine degli impulsi (mediana), altrimenti inizio della traccia
     const pEnds = pulseRight ? [] : pulses.filter(o => o.p).map(o => o.p.xEnd);
     const startX = pEnds.length ? median(pEnds) + pxmm * 1.2 : null;
     const rEnds = pulseRight ? pulses.filter(o => o.p).map(o => o.p.xStart) : [];
     const endX = rEnds.length ? median(rEnds) - pxmm * 0.8 : null;
+    const pass = hints => {
+    leads = {}; overlay = []; segs = []; limLeads = []; rhythmPts = null; rhythmName = null;
     rows.slice(0, prof.mappa.length).forEach((r, ri) => {
       const pu = pulses[ri] && pulses[ri].p;
       const names = prof.mappa[ri];
@@ -1144,7 +1243,17 @@
         overlay.push({ t: 'label', x: a + pxmm, y: r.y - pxmm * 9, s: nm.replace('*', '') });
         if (nm.endsWith('*')) { if (!rhythmPts) { rhythmPts = pts; rhythmName = nm.replace('*', '') + ' (striscia)'; } return; }
         if (pts.length < pxmm * 20 || leads[nm]) return;
-        const L = S.analyzeLead(pts, pxmm, speed, gain, { smooth: 5 });
+        let L = S.analyzeLead(pts, pxmm, speed, gain, { smooth: 5 });
+        // 1.5.0 – BATTITI DI CONSENSO anche per la MISURA: se la derivazione ha riconosciuto meno QRS di quelli
+        // sincroni delle altre derivazioni della stessa colonna, i QRS si cercano alle ascisse di consenso
+        if (hints && hints[ci] && hints[ci].length >= 2) {
+          const good0 = L.beats.filter(bt => bt.complete).length;
+          const hx = hints[ci].filter(x => x >= a + pxmm * 2 && x <= b - pxmm * 2);
+          if (hx.length >= 2 && good0 < hx.length * 0.8) {
+            const L2 = S.analyzeLead(pts, pxmm, speed, gain, { smooth: 5, hintX: hx.map(x => x / pxmm) });
+            if (L2.beats.filter(bt => bt.complete).length > good0) { L = L2; L.consenso = true; }
+          }
+        }
         L.cov = coverage(r.cols, a, b);
         leads[nm] = L;
         L.marks.forEach(mk => {
@@ -1180,6 +1289,27 @@
         if (L.rLim || L.sLim || L.stLim) limLeads.push(nm + (L.rLim ? ' (R)' : '') + (L.sLim ? ' (S)' : '') + (L.stLim ? ' (ST non misurabile)' : ''));
       });
     });
+    };
+    pass(null);
+    // 1.5.0: ascisse (px) dei QRS sincroni per colonna (≥ 2 derivazioni, almeno il 40% di quelle lette)
+    const hints = (() => {
+      const byCol = {};
+      segs.forEach(sg => { const L = leads[sg.name]; if (!L) return; (byCol[sg.ci] = byCol[sg.ci] || []).push(L.beats.map(bt => L.toX(bt.c) * pxmm)); });
+      const out = {}; let need = false;
+      Object.keys(byCol).forEach(ci => {
+        const list = byCol[ci]; if (list.length < 3) return;
+        const ev = []; list.forEach((xs, li) => xs.forEach(x => ev.push({ x, li }))); ev.sort((p, q) => p.x - q.x);
+        const cl = []; ev.forEach(e => { const c = cl[cl.length - 1]; if (c && e.x - c.x0 <= pxmm * 3 && !c.l.has(e.li)) { c.xs.push(e.x); c.l.add(e.li); } else cl.push({ x0: e.x, xs: [e.x], l: new Set([e.li]) }); });
+        const minL = Math.max(2, Math.ceil(list.length * 0.4));
+        const acc = [];
+        cl.filter(c => c.l.size >= minL).sort((p, q) => q.l.size - p.l.size).forEach(c => { const x = median(c.xs); if (acc.every(u => Math.abs(u - x) >= pxmm * 6.25)) acc.push(x); });
+        acc.sort((p, q) => p - q);
+        out[ci] = acc;
+        if (list.some(xs => xs.length < acc.length * 0.8)) need = true;
+      });
+      return need ? out : null;
+    })();
+    if (hints) pass(hints);
     // ritmo: striscia dedicata, altrimenti la riga indicata dal profilo (es. II + V2 nell'ELI 280)
     let rhythm = null;
     const RR = [];

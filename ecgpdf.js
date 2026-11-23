@@ -215,15 +215,24 @@
       return out;
     };
   }
-  function detectBeats(s) {
+  function detectBeats(s, robust) {
     // energia della pendenza (quadrato della derivata su 20 ms): privilegia il QRS rispetto alla T
     const n = s.length, d2 = new Array(n).fill(0);
     for (let i = 1; i < n - 1; i++) { const d = (s[i + 1] - s[i - 1]) / 2; d2[i] = d * d; }
     const e = new Array(n).fill(0); let acc = 0;
     for (let i = 0; i < n; i++) { acc += d2[i]; if (i >= 10) acc -= d2[i - 10]; e[i] = acc; }
     const ec = e.map((v, i) => e[Math.min(n - 1, i + 5)]);
-    const mx = Math.max.apply(null, ec);
+    let mx = Math.max.apply(null, ec);
     if (!(mx > 0)) return [];
+    // 1.5.0 (foto): un solo artefatto (separatore verticale tra le colonne, salto della traccia) con energia
+    // molto superiore ai QRS alzava la soglia e faceva perdere quasi tutti i battiti (foto 9: 1 battito su 5).
+    // Riferimento = 2° massimo locale (finestre di 250 ms) se il 1° lo supera di oltre 3 volte
+    if (robust) {
+      const loc = []; const W = 125;
+      for (let k = 0; k < n; k++) { if (ec[k] <= 0) continue; let ok = true; for (let q = Math.max(0, k - W); q <= Math.min(n - 1, k + W); q++) if (ec[q] > ec[k] || (ec[q] === ec[k] && q < k)) { ok = false; break; } if (ok) loc.push(ec[k]); }
+      loc.sort((a, b) => b - a);
+      if (loc.length >= 3 && loc[0] > 3 * loc[1]) mx = loc[1];
+    }
     const thr = 0.3 * mx;
     const cand = [];
     let i = 0;
@@ -367,7 +376,17 @@
       for (let i = 0; i < sig.length; i++) { let a = 0, c = 0; for (let k = i - h; k <= i + h; k++) if (k >= 0 && k < sig.length) { a += sig[k]; c++; } out[i] = a / c; }
       sig = out;
     }
-    const peaks = detectBeats(sig);
+    let peaks = detectBeats(sig, opts.smooth > 1);
+    // 1.5.0: QRS suggeriti (ascisse in mm dei battiti di consenso delle derivazioni simultanee): picco locale ±60 ms
+    if (opts.hintX && opts.hintX.length) {
+      const nS = sig.length;
+      peaks = opts.hintX.map(xm => Math.round((xm - x0) / dxmm) - start).filter(i => i > 10 && i < nS - 10).map(p => {
+        const lo = Math.max(0, p - 30), hi = Math.min(nS - 1, p + 30);
+        const loc = median(sig.slice(Math.max(0, p - 150), Math.min(nS, p + 150)));
+        let best = p, bv = -1; for (let k = lo; k <= hi; k++) { const v = Math.abs(sig[k] - loc); if (v > bv) { bv = v; best = k; } }
+        return best;
+      });
+    }
     const beats = [];
     // la media mobile (foto) allarga il QRS di ~(w−1)/2 campioni per lato: correzione della sola durata (ST e ampiezze invariati)
     const cut = opts.smooth > 1 ? Math.min(2, (opts.smooth | 0) >> 1) : 0;
