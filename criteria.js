@@ -8,8 +8,8 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.5.4',
-    criteriaVersion: '2026.11.9',
+    version: '1.5.5',
+    criteriaVersion: '2026.11.10',
     lastReview: '2026-11-23',
     nextReview: '2026-11-30',
     riferimenti: [
@@ -567,7 +567,7 @@
           ctx.wpw = true;
         } else {
           F.add(CAT.COND, 'pr-corto', 'PR corto senza onda delta', LIV.INFO,
-            ['PR ' + r0(m.pr) + ' ms: conduzione nodale accelerata, ritmo atriale basso o variante normale.'], 'AHA/ACCF/HRS 2009');
+            ['PR ' + r0(m.pr) + ' ms: conduzione nodale accelerata, ritmo atriale basso o variante normale.'], 'AHA/ACCF/HRS 2009').breve = 'PR ' + r0(m.pr) + ' ms';
         }
       }
     }
@@ -671,6 +671,67 @@
   /* =====================================================================
      5. ATRI E VENTRICOLI
      ===================================================================== */
+  /* 1.5.4 – ONDE Q PATOLOGICHE AUTOMATICHE (segnalazioni di Cimox: casi 11, 13, 16 con IM pregresso non visto).
+     IV Definizione Universale di IMA (Thygesen 2018), manifestazioni ECG di IM pregresso (in assenza di BBS,
+     pre-eccitazione, ritmo stimolato):
+       • qualunque Q > 20 ms o complesso QS in V2–V3;
+       • Q ≥ 30 ms e ≥ 1 mm, o QS, in I, II, aVL, aVF, V4–V6 in ≥ 2 derivazioni contigue (I–aVL; V1–V6; II–III–aVF);
+       • R ≥ 40 ms in V1–V2 con R/S ≥ 1 e T positiva concordante (equivalente posteriore) – non valutato in automatico.
+     Prudenza: si richiedono sempre ≥ 2 derivazioni contigue (QS isolato in V1–V2 o Q isolata in III = varianti
+     normali); con valori letti dalla foto il reperto è «da verificare». Durata della Q: campo qd (ms). */
+  function analizzaQ(d, m, F, ctx) {
+    if (ctx.lbbb || ctx.paced || ctx.wpw) return;
+    const lc = d.lowConf || {}, man = d.manual || {};
+    const val = (l, k) => { const v = n(L(d, l)[k]); return v === null ? null : Math.abs(v); };
+    const info = l => {
+      const r = val(l, 'r'), s = val(l, 's'), q = val(l, 'q'), qd = val(l, 'qd');
+      // QS: nessuna R; dalla foto la S può non essere proposta (variabile tra i battiti) ma la durata del QS sì
+      const qs = r !== null && r <= 0.2 && ((s !== null && s >= 1) || (q === null && qd !== null && qd >= 40));
+      // dalla FOTO (valori non verificati) specificità aggiuntiva: Q ≥ 1/3 della R oppure ≥ 40 ms (q settali/
+      // inferiori strette davanti a R alte = normali; caso 6: q 1,1–1,8 mm / 30–35 ms con R 6–7 mm, nessun IM)
+      const fotoQ = d.fotoDaVerificare && !man['leads.' + l + '.q'] && !man['leads.' + l + '.qd'];
+      const qOkFoto = !fotoQ || (q !== null && ((r !== null && r > 0 ? q / r >= 1 / 3 : true) || (qd !== null && qd >= 40)));
+      return { l, r, s, q, qd, qs, qOkFoto };
+    };
+    const qual = {}, det = [];
+    LEADS.forEach(l => {
+      const x = info(l);
+      if (l === 'V1' || l === 'aVR') return;
+      if (l === 'V2' || l === 'V3') {
+        if (x.qs || (x.q !== null && x.q >= 0.5 && x.qd !== null && x.qd > 20 && x.qOkFoto)) { qual[l] = x; }
+      } else if (x.qs || (x.q !== null && x.q >= 1 && x.qd !== null && x.qd >= 30 && x.qOkFoto)) {
+        qual[l] = x;
+      }
+    });
+    const groups = [
+      { nome: 'inferiore', leads: ['II', 'III', 'aVF'], ok: q => q.filter(l => l !== 'III').length >= 1 && q.length >= 2 },
+      { nome: 'laterale alta', leads: ['I', 'aVL'], ok: q => q.length >= 2 },
+      { nome: 'anteriore', leads: ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'], ok: q => { const idx = q.map(l => ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'].indexOf(l)).sort(); for (let i = 1; i < idx.length; i++) if (idx[i] - idx[i - 1] === 1) return true; return false; } }
+    ];
+    const terr = [];
+    groups.forEach(g => {
+      const q = g.leads.filter(l => qual[l]);
+      if (!g.ok(q)) return;
+      let nome = g.nome;
+      if (g.nome === 'anteriore') { const v = q.map(l => +l.slice(1)); const mx = Math.max.apply(null, v), mi = Math.min.apply(null, v); nome = mx >= 5 && mi <= 4 ? 'anteriore estesa / antero-laterale' : mi >= 5 ? 'laterale (V5–V6)' : mi <= 2 ? 'antero-settale' : 'anteriore'; }
+      terr.push({ nome, q });
+    });
+    if (!terr.length) return;
+    const desc = l => { const x = qual[l]; return l + (x.qs ? ' QS' + (x.s !== null ? ' (S ' + f1(x.s) + ' mm' + (x.qd !== null ? ', ' + r0(x.qd) + ' ms' : '') + ')' : '') : ' Q ' + f1(x.q) + ' mm' + (x.qd !== null ? ' / ' + r0(x.qd) + ' ms' : '') + (x.r !== null ? ', R ' + f1(x.r) + ' mm' : '')); };
+    const leadsAll = [].concat.apply([], terr.map(t => t.q));
+    const daFoto = d.fotoDaVerificare && leadsAll.some(l => !man['leads.' + l + '.q'] && !man['leads.' + l + '.r']);
+    const titolo = 'Onde Q patologiche' + ' – ' + terr.map(t => t.nome + ' (' + t.q.join(', ') + ')').join('; ') + ': necrosi, IM pregresso a epoca non determinabile (o in evoluzione se c\'è STE nello stesso territorio)' + (daFoto ? ' – da verificare' : '');
+    const f = F.add(CAT.OMI, 'q-pat-auto', titolo, LIV.MOD,
+      (daFoto ? ['DA VERIFICARE: Q/QS letti automaticamente dalla foto (una piccola r iniziale può non essere vista). Controlla in ' + leadsAll.join(', ') + ' con lo strumento «Onda Q» (profondità e durata).'] : []).concat([
+        'Misure: ' + leadsAll.map(desc).join('; ') + '.',
+        'Criteri IV UDMI: Q > 20 ms o QS in V2–V3; Q ≥ 30 ms e ≥ 1 mm (o QS) in ≥ 2 derivazioni contigue (I–aVL; V1–V6; II–III–aVF).',
+        'Diagnosi differenziale (pseudo-infarto): IVS / cardiomiopatia ipertrofica (Q settali profonde e strette), BBS e pre-eccitazione (esclusi qui), cardiomiopatia dilatativa/infiltrativa, BPCO e posizione verticale (QS V1–V3), errato posizionamento degli elettrodi precordiali (troppo alti), pneumotorace sinistro, embolia polmonare acuta (QIII isolata). Nel post-cardiochirurgia: nuova Q dopo CABG/valvola = possibile IM perioperatorio (V UDMI: IM correlato a procedura) → confronto con l\'ECG preoperatorio, troponina, eco (nuova acinesia).',
+        'Se le Q sono NUOVE rispetto agli ECG precedenti con sintomi o troponina elevata: infarto recente/in evoluzione → valutazione cardiologica urgente.'
+      ]), 'Thygesen K et al. IV Definizione Universale di IMA, Eur Heart J 2019;40:237 (Circulation 2018); V Definizione Universale 2026',
+      'Confronta con ECG precedenti; ecocardiogramma per acinesia/assottigliamento parietale nel territorio corrispondente.');
+    ctx.qPat = terr;
+  }
+
   /* 1.5.4 – PANNELLO IPERTROFIA (richiesta di Cimox 27/11: «lettura automatica dell'ipertrofia destra e sinistra con
      gli ultimi criteri validati e descrizione dei criteri utilizzati»). Elenca OGNI criterio con valore misurato,
      soglia ed esito (positivo / negativo / non misurabile), sia per l'IVS sia per l'IVD; con BBS usa i criteri
@@ -1242,7 +1303,7 @@
         'Paziente spesso senza dolore, R conservate, assenza di Q, STE < 1 mm: IVA critica transitoriamente riaperta.'],
       'de Zwaan 1982; ESC 2023 ACS', 'Coronarografia precoce; EVITARE test da sforzo (rischio di riocclusione).', 'nstemi');
 
-    if (p.qPatologiche) F.add(CAT.OMI, 'q-pat', 'Onde Q patologiche (necrosi pregressa o in evoluzione)', LIV.MOD,
+    if (p.qPatologiche && !F.has('q-pat-auto')) F.add(CAT.OMI, 'q-pat', 'Onde Q patologiche (necrosi pregressa o in evoluzione)', LIV.MOD,
       ['Q ≥ 30 ms e ≥ 1 mm in ≥ 2 derivazioni contigue, o qualunque Q ≥ 20 ms / QS in V2–V3, o R ≥ 40 ms con R/S ≥ 1 in V1–V2 (equivalente posteriore).'],
       'IV UDMI 2018');
   }
@@ -1435,6 +1496,7 @@
     analizzaSAeAV(d, m, F, ctx);
     // RVH prima dell'EPS (diagnosi di esclusione)
     analizzaIV(d, m, F, ctx);
+    analizzaQ(d, m, F, ctx);
     analizzaAsse(d, m, F);
     analizzaCamere(d, m, F, ctx);
     if (ctx.rvhProbabile && F.has('eps')) {
@@ -1491,7 +1553,7 @@
         // 1.5.3: CONCLUSIONE immediata (richiesta di Cimox 27/11): diagnosi principali in una riga, in ordine di
         // gravità, come la lettura stampata dall'elettrocardiografo; l'operatore conferma o corregge
         conclusione: [ritmoF ? ritmoF.titolo : null].concat(F.list.filter(f => f !== ritmoF && f.cat !== CAT.QUALITA && f.cat !== CAT.RITMO &&
-          ([LIV.CRIT, LIV.ALTO, LIV.MOD].indexOf(f.livello) >= 0 || ['ripol-sec-bbs', 'ivs', 'ivs-bbs', 'ivs-bbs-poss', 'ivd', 'ivd-poss'].indexOf(f.id) >= 0))
+          ([LIV.CRIT, LIV.ALTO, LIV.MOD].indexOf(f.livello) >= 0 || ['ripol-sec-bbs', 'ivs', 'ivs-bbs', 'ivs-bbs-poss', 'ivd', 'ivd-poss', 'pr-corto'].indexOf(f.id) >= 0))
           .sort((a, b) => ORDINE_LIV[a.livello] - ORDINE_LIV[b.livello]).map(f => f.titolo + (f.breve ? ' (' + f.breve + ')' : ''))).filter(Boolean).slice(0, 8)
       },
       ctx

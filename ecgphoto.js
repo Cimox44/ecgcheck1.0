@@ -857,6 +857,27 @@
   }
   function selectRows(rows, pxmm, nWanted, opts_dbg) {
     if (rows.length < 2) return rows;
+    // 1.5.4 (caso 16 alla risoluzione del telefono → letto come 12×1, ritmo «non classificato», asse −46°): «righe»
+    // spurie a bassa copertura a metà strada tra le righe vere (bordo superiore degli impulsi di taratura, linee di
+    // griglia spesse) – a volte con un falso impulso – dimezzavano il passo. Passo vero = distanza tra righe
+    // continue (copertura ≥ 0,85) con il maggior supporto (multipli inclusi); le righe a bassa copertura che non
+    // cadono a un multiplo intero del passo da una riga continua vengono eliminate prima della scelta delle righe
+    {
+      const hi = rows.filter(r => r.ext.cov >= 0.85).map(r => r.y).sort((a, b) => a - b);
+      if (hi.length >= 4) {
+        const gd = []; for (let i = 1; i < hi.length; i++) gd.push(hi[i] - hi[i - 1]);
+        const near = (v, t) => Math.abs(v - t) < t * 0.1;
+        let best = null;
+        gd.filter(g => g > pxmm * 12).forEach(g => { const sup = gd.filter(o => near(o, g) || near(o, 2 * g) || near(o, 3 * g)).length; if (!best || sup > best.sup || (sup === best.sup && g > best.g)) best = { g, sup }; });
+        if (best && best.sup >= 3) {
+          const st = median(gd.filter(o => near(o, best.g)));
+          const keep = r => { if (r.ext.cov >= 0.75) return true; const d = Math.min.apply(null, hi.map(y => Math.abs(r.y - y))); const k = Math.max(1, Math.round(d / st)); return Math.abs(d - k * st) < st * 0.15; };
+          const drop = rows.filter(r => !keep(r));
+          if (drop.length && opts_dbg) console.log('righe spurie fuori passo', st.toFixed(1), drop.map(r => Math.round(r.y)).join(','));
+          if (drop.length && rows.length - drop.length >= 3) rows = rows.filter(keep);
+        }
+      }
+    }
     let cand = rows;
     // 1.3.3: vale la disposizione della maggioranza (impulso a inizio riga OPPURE a fine riga): un falso
     // impulso "a fine riga" su una scritta del piè di pagina non deve promuovere quella riga

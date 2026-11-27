@@ -1,4 +1,4 @@
-# ECGcheck 1.5.4 — Analisi ECG assistita (PWA)
+# ECGcheck 1.5.5 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -93,6 +93,16 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.5.5 (27/11/2026) — onde Q patologiche automatiche e foto ad alta risoluzione
+
+| Area | 1.5.4 | 1.5.5 |
+|---|---|---|
+| Foto del telefono (alta risoluzione) | righe spurie a metà tra le righe → 12×1, «ritmo non classificato», asse sbagliato | righe fuori passo scartate: caso 16 sinusale, FC 89, PR 110, asse −10° a ogni risoluzione |
+| Onde Q / QS | solo casella manuale | automatiche (IV UDMI): Q > 20 ms o QS in V2–V3; Q ≥ 30 ms e ≥ 1 mm o QS in ≥ 2 derivazioni contigue; durata della Q misurata |
+| PR corto | non in conclusione, spesso non proposto | in conclusione con la misura |
+
+Fonte: Thygesen K et al., Fourth Universal Definition of Myocardial Infarction (2018), Eur Heart J 2019;40:237–269.
 
 ## Aggiornamento 1.5.4 (27/11/2026) — conclusione con misure e pannello ipertrofia
 

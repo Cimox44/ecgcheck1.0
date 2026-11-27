@@ -356,7 +356,11 @@
     // 1.5.3: morfologia del QRS per il riconoscimento automatico dei blocchi di branca
     // rpt = tempo al picco R (deflessione intrinsecoide, ms); rW = durata della R sopra il 50% dell'ampiezza (R larga);
     // Rp = R′ (onda positiva dopo il nadir della S, rsR′ del BBDx); sW = durata della S sotto il 50% (S larga)
-    let rpt = null, rW = null, Rp = 0, sW = null;
+    let rpt = null, rW = null, Rp = 0, sW = null, qW = null;
+    // 1.5.4: durata della Q (UDMI: ≥ 30 ms, in V2–V3 > 20 ms): dall'inizio del QRS al ritorno sopra la linea di base
+    // prima della R; con complesso QS (nessuna R) = durata del QRS
+    if (R >= 0.25 && Q >= 0.5 && rI > on) { let k = on; while (k < rI && raw[k] > baseR - 0.15) k++; let z = k; while (z < rI && raw[z] < baseR) z++; qW = Math.max(0, (z - on - cut) * DT); }
+    else if (R < 0.25 && S >= 1) qW = Math.max(0, (off - on - 2 * cut) * DT);
     if (R >= 0.25 && rI >= on) {
       rpt = Math.max(0, (rI - on - cut) * DT);
       const h = baseR + R * 0.5; let a = rI, z = rI; while (a > on && raw[a] > h) a--; while (z < off && raw[z] > h) z++; rW = (z - a) * DT;
@@ -364,7 +368,7 @@
       if (sI2 > rI) { let mx = -Infinity; for (let k = sI2; k <= off; k++) mx = Math.max(mx, raw[k]); if (mx - raw[sI2] >= 1 && mx - baseR >= 0.5 && mx - raw[off] >= 1) Rp = mx - baseR; } // R′ = vero picco (non la risalita verso un punto J sopraslivellato)
     }
     if (S >= 0.5) { let sI3 = on; for (let k = on; k <= off; k++) if (raw[k] < raw[sI3]) sI3 = k; const h = baseR - S * 0.5; let a = sI3, z = sI3; while (a > on && raw[a] < h) a--; while (z < off && raw[z] < h) z++; sW = (z - a) * DT; }
-    return { rpt, rW, Rp, sW, on, off, c, rI, base, R, Q, S, st, st60, prDep, stTP: tpL !== null ? s[off] - tpL : null, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
+    return { rpt, rW, Rp, sW, qW, on, off, c, rI, base, R, Q, S, st, st60, prDep, stTP: tpL !== null ? s[off] - tpL : null, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
   }
 
   function analyzeLead(seg, ptPerMm, speed, gain, opts) {
@@ -408,7 +412,7 @@
     const toX = idx => x0 + (idx + start) * dxmm; // mm
     return {
       sig, raw, start, x0, dxmm, peaks, beats,
-      R: pick('R'), S: pick('S'), Q: pick('Q'), rpt: pick('rpt'), rW: pick('rW'), Rp: pick('Rp'), sW: pick('sW'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'), prDep: pick('prDep'), stTP: pick('stTP'),
+      R: pick('R'), S: pick('S'), Q: pick('Q'), rpt: pick('rpt'), rW: pick('rW'), qW: pick('qW'), Rp: pick('Rp'), sW: pick('sW'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'), prDep: pick('prDep'), stTP: pick('stTP'),
       n: use.length,
       marks: use.map(b => ({ j: toX(b.off), on: toX(b.on), r: toX(b.rI), base: b.base, jy: sig[b.off], ry: sig[b.rI] })),
       toX

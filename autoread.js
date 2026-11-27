@@ -93,7 +93,9 @@
       if (l.R != null && !(photo && l.rVar)) { set(P + 'r', String(r1(Math.abs(l.R)))); if (l.rLim) lowConf[P + 'r'] = 'traccia sovrapposta: valore minimo'; }
       if (l.S != null && !(photo && l.sVar)) { set(P + 's', String(r1(Math.abs(l.S)))); if (l.sLim) lowConf[P + 's'] = 'traccia sovrapposta: valore minimo'; }
       if (photo && (l.rVar || l.sVar)) lowConf[P + 'r'] = lowConf[P + 'r'] || 'R/S variabili tra i battiti: non proposte, misurale';
-      if (l.Q != null && l.Q >= 0.5) set(P + 'q', String(r1(Math.abs(l.Q))));
+      if (l.Q != null && l.Q >= 0.5 && !(photo && l.rVar && l.Q < 1)) { set(P + 'q', String(r1(Math.abs(l.Q)))); if (l.qW != null) set(P + 'qd', String(Math.round(l.qW))); if (photo) lowConf[P + 'q'] = 'Q letta dalla foto: verifica profondità e durata'; }
+      // 1.5.4: complesso QS (nessuna R) proposto con la sua durata, per i criteri UDMI delle onde Q
+      if (l.R === 0 && l.S != null && l.S >= 1 && l.qW != null && !(photo && l.sVar && l.S < 2)) { set(P + 'qd', String(Math.round(l.qW))); if (photo) lowConf[P + 'r'] = lowConf[P + 'r'] || 'complesso QS letto dalla foto (nessuna R): verifica'; }
       // dalla FOTO lo ST non viene applicato nelle derivazioni con QRS molto diversi da battito a battito
       // 1.5.1 (sicurezza, falso NEGATIVO): lo ST è escluso solo se incoerente tra i battiti (stLim, controllo di
       // dispersione J/J+60 ≤ 0,5 mm in ecgphoto); R/S variabili da sole NON bastano più a escluderlo: in uno STEMI
@@ -118,7 +120,8 @@
       const pick = (m, g) => m != null ? m : (g != null ? Math.round(g) : null);
       // 1.5.3 (caso 14: PR 244 letto vs 184 stampato → falso BAV I): PR dalla foto solo se coerente tra i battiti
       // (dispersione ≤ 45 ms; sui casi reali con PR corretto 6–36 ms, nel caso 14 60 ms)
-      const prCoerente = !R || R.prSpread == null || R.prSpread <= 45;
+      // 1.5.4: per PR ≤ 200 ms (nessun BAV I in gioco) dispersione fino a 70 ms (caso 16: PR corto 110 letto, 104 stampato)
+      const prCoerente = !R || R.prSpread == null || R.prSpread <= 45 || (G.pr != null && G.pr <= 200 && R.prSpread <= 70);
       const prFoto = photo && R && R.pPresenti && !unrel && A.quality && A.quality.score >= 70 && G.pr && prCoerente ? G.pr : null;
       if (photo && R && R.pPresenti && G.pr && !prCoerente) lowConf['intervalli.pr'] = 'PR dalla foto incoerente tra i battiti (' + Math.round(G.pr) + ' ms, dispersione ' + Math.round(R.prSpread) + ' ms): non proposto, misuralo con lo strumento «PR»';
       const iv = {
