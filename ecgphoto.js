@@ -1313,7 +1313,7 @@
     // ritmo: striscia dedicata, altrimenti la riga indicata dal profilo (es. II + V2 nell'ELI 280)
     let rhythm = null;
     const RR = [];
-    let pInfo = null;
+    let pInfo = null, pLead = null;
     const rhythmSources = [];
     if (rhythmPts) rhythmSources.push({ pts: rhythmPts, name: rhythmName });
     else {
@@ -1323,7 +1323,7 @@
     rhythmSources.forEach((src, k) => {
       const L = S.analyzeLead(src.pts, pxmm, speed, gain, { smooth: 5 });
       const rr = S.analyzeRhythm(L);
-      if (rr) { RR.push.apply(RR, rr.rr); if (k === 0) pInfo = rr; L.marks.forEach(mk => overlay.push({ t: 'r', x: mk.r * pxmm, y: -mk.ry * pxmm / (10 / gain) })); }
+      if (rr) { RR.push.apply(RR, rr.rr); if (k === 0) { pInfo = rr; pLead = L; if (opts.debug) console.log('ritmo', src.name, JSON.stringify({ pr: rr.pr, prSpread: rr.prSpread, pkSpread: rr.pkSpread, nP: rr.nP, nB: L.beats.length })); } L.marks.forEach(mk => overlay.push({ t: 'r', x: mk.r * pxmm, y: -mk.ry * pxmm / (10 / gain) })); }
     });
     // 1.4.0: BATTITI DI CONSENSO – nel 6×2 (e nel 3×4) le derivazioni della stessa colonna sono registrate in
     // contemporanea: un QRS vero compare alla stessa ascissa (± 70 ms) in più derivazioni; battiti persi in una
@@ -1345,7 +1345,7 @@
         const bt = acc.map(a => a.t);
         // durata GLOBALE del QRS (come gli elettrocardiografi): dal 2° inizio più precoce alla 2ª fine più tardiva
         // tra le derivazioni simultanee (≥ 3 derivazioni affidabili)
-        acc.forEach(a => { const bs = a.c.bs.filter(b => !b.unrel); if (bs.length < 3) return; const on = bs.map(b => b.on).sort((p, q) => p - q), off = bs.map(b => b.off).sort((p, q) => q - p); consBeats.push({ t: a.t, qrs: off[1] - on[1], n: bs.length }); });
+        acc.forEach(a => { const bs = a.c.bs.filter(b => !b.unrel); if (bs.length < 3) return; const on = bs.map(b => b.on).sort((p, q) => p - q), off = bs.map(b => b.off).sort((p, q) => q - p); consBeats.push({ t: a.t, qrs: off[1] - on[1], on: on[1], n: bs.length }); });
         for (let i = 1; i < bt.length; i++) allRR.push(bt[i] - bt[i - 1]);
         nCols++;
       });
@@ -1371,7 +1371,7 @@
         m = cons.med; useRR = clean(cons.rr); if (useRR.length < 2) useRR = cons.rr;
       }
       const pr = pInfo && pInfo.pPresenti ? pInfo.pr : null;
-      rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pr, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
+      rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pr, prSpread: pInfo ? pInfo.prSpread : null, pkSpread: pInfo ? pInfo.pkSpread : null, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
     }
     if (rrMed) Object.keys(leads).forEach(k => {
       const L = leads[k]; const exp = (L.durS || 0) * 1000 / rrMed;

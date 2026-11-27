@@ -1,4 +1,4 @@
-# ECGcheck 1.5.2 — Analisi ECG assistita (PWA)
+# ECGcheck 1.5.3 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -93,6 +93,18 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.5.3 (27/11/2026) — blocchi di branca automatici e conclusione immediata
+
+| Area | Prima (1.5.2) | Ora (1.5.3) |
+|---|---|---|
+| Blocco di branca dalla foto/PDF | mai riconosciuto (morfologia da spuntare a mano) → «ritardo di conduzione aspecifico» | BBS/BBDx riconosciuti in automatico (AHA/ACCF/HRS 2009), caselle evidenziate «da verificare» |
+| Referto | lista di reperti | **Conclusione** in testa (e nel PDF): diagnosi principali in ordine di gravità |
+| Ripolarizzazione nel BBS | solo Sgarbossa | reperto «Alterazioni secondarie della ripolarizzazione (da BBS)» + segni di ischemia |
+| IVS con BBS | «criteri non applicabili» | criteri specifici (SV2+RV6 > 45 mm, Sokolow ≥ 30, RaVL ≥ 11, AAS ± QRS > 155 ms); negativi = non esclusa → eco |
+| PR dalla foto | proposto anche se incoerente tra i battiti (falso BAV I) | proposto solo con dispersione ≤ 45 ms |
+
+Fonti: Hancock EW et al., AHA/ACCF/HRS 2009 parte V; Surawicz B et al., AHA/ACCF/HRS 2009 parte III; Klein RC et al., Am Heart J 1984; Mehta A et al., Am J Cardiol 2000;85:354; Burgos PFM et al., Arq Bras Cardiol 2017;108:47; Sgarbossa NEJM 1996; Smith Ann Emerg Med 2012.
 
 ## Aggiornamento 1.5.2 (27/11/2026) — foto ad alta risoluzione e PR corto
 

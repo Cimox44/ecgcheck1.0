@@ -353,7 +353,18 @@
     const rrB = prevC ? (c - prevC) * DT : nextC ? (nextC - c) * DT : 0;
     const tpL = rrB >= 600 && on - 135 > 0 ? median(s.slice(on - 135, on - 115)) : null;
     const prDep = tpL !== null ? base - tpL : null;
-    return { on, off, c, rI, base, R, Q, S, st, st60, prDep, stTP: tpL !== null ? s[off] - tpL : null, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
+    // 1.5.3: morfologia del QRS per il riconoscimento automatico dei blocchi di branca
+    // rpt = tempo al picco R (deflessione intrinsecoide, ms); rW = durata della R sopra il 50% dell'ampiezza (R larga);
+    // Rp = R′ (onda positiva dopo il nadir della S, rsR′ del BBDx); sW = durata della S sotto il 50% (S larga)
+    let rpt = null, rW = null, Rp = 0, sW = null;
+    if (R >= 0.25 && rI >= on) {
+      rpt = Math.max(0, (rI - on - cut) * DT);
+      const h = baseR + R * 0.5; let a = rI, z = rI; while (a > on && raw[a] > h) a--; while (z < off && raw[z] > h) z++; rW = (z - a) * DT;
+      let sI2 = rI; for (let k = rI; k <= off; k++) if (raw[k] < raw[sI2]) sI2 = k;
+      if (sI2 > rI) { let mx = -Infinity; for (let k = sI2; k <= off; k++) mx = Math.max(mx, raw[k]); if (mx - raw[sI2] >= 1 && mx - baseR >= 0.5 && mx - raw[off] >= 1) Rp = mx - baseR; } // R′ = vero picco (non la risalita verso un punto J sopraslivellato)
+    }
+    if (S >= 0.5) { let sI3 = on; for (let k = on; k <= off; k++) if (raw[k] < raw[sI3]) sI3 = k; const h = baseR - S * 0.5; let a = sI3, z = sI3; while (a > on && raw[a] < h) a--; while (z < off && raw[z] < h) z++; sW = (z - a) * DT; }
+    return { rpt, rW, Rp, sW, on, off, c, rI, base, R, Q, S, st, st60, prDep, stTP: tpL !== null ? s[off] - tpL : null, T: tI !== null ? tV : null, tEnd, qrs: (off - on - 2 * cut) * DT, qt: tEnd !== null ? (tEnd - on - cut) * DT : null, complete: tI !== null && tI < tPeakLim };
   }
 
   function analyzeLead(seg, ptPerMm, speed, gain, opts) {
@@ -397,7 +408,7 @@
     const toX = idx => x0 + (idx + start) * dxmm; // mm
     return {
       sig, raw, start, x0, dxmm, peaks, beats,
-      R: pick('R'), S: pick('S'), Q: pick('Q'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'), prDep: pick('prDep'), stTP: pick('stTP'),
+      R: pick('R'), S: pick('S'), Q: pick('Q'), rpt: pick('rpt'), rW: pick('rW'), Rp: pick('Rp'), sW: pick('sW'), st: pick('st'), st60: pick('st60'), T: pick('T'), qrs: pick('qrs'), qt: pick('qt'), prDep: pick('prDep'), stTP: pick('stTP'),
       n: use.length,
       marks: use.map(b => ({ j: toX(b.off), on: toX(b.on), r: toX(b.rI), base: b.base, jy: sig[b.off], ry: sig[b.rI] })),
       toX
@@ -453,7 +464,7 @@
     return {
       rr, rrMean: mean(rr), hr: 60000 / mean(rr), rrVar: Math.max.apply(null, rr) - Math.min.apply(null, rr),
       pPresenti: consistent, pAmp: valid.length ? median(valid.map(p => p.amp)) : null,
-      pr: consistent ? median(prs) : null, pDur: consistent && valid.some(p => p.dur) ? median(valid.map(p => p.dur).filter(v => v)) : null
+      pr: consistent ? median(prs) : null, prSpread: consistent ? spreadPr : null, pkSpread: consistent ? spreadPk : null, nP: valid.length, pDur: consistent && valid.some(p => p.dur) ? median(valid.map(p => p.dur).filter(v => v)) : null
     };
   }
 

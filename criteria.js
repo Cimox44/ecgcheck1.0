@@ -8,8 +8,8 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.5.2',
-    criteriaVersion: '2026.11.7',
+    version: '1.5.3',
+    criteriaVersion: '2026.11.8',
     lastReview: '2026-11-23',
     nextReview: '2026-11-30',
     riferimenti: [
@@ -602,6 +602,12 @@
           strauss ? 'Soddisfa anche i criteri di Strauss (QRS ≥ ' + (sesso === 'F' ? 130 : 140) + ' ms + notch medio-QRS in ≥ 2 derivazioni): "BBS vero", predittore di risposta alla CRT.' : 'Criteri AHA/ACCF/HRS 2009 (Strauss non soddisfatti).',
           'Il BBS nuovo da solo NON è più uno STEMI-equivalente (ACC 2022): applicare Sgarbossa / Smith / Barcellona.'],
         'AHA/ACCF/HRS 2009; Strauss 2011; ACC 2022 ECDP; ESC 2023 ACS');
+      // 1.5.3: referto immediato della ripolarizzazione secondaria (richiesta di Cimox: «Alterazioni della
+      // ripolarizzazione da disturbo della conduzione»); lo ST resta valutato con Sgarbossa/Smith/Barcellona
+      F.add(CAT.RIPOL, 'ripol-sec-bbs', 'Alterazioni secondarie della ripolarizzazione (da BBS)', LIV.INFO,
+        ['Nel BBS ST e T sono attesi DISCORDANTI rispetto al QRS: sopraslivellamento ST con T positiva in V1–V3 (QRS negativo), sottoslivellamento ST con T negativa in I, aVL, V5–V6 (QRS positivo).',
+          'Sono patologici (sospetta ischemia): ST CONCORDANTE (sopra ≥ 1 mm dove il QRS è positivo; sotto ≥ 1 mm in V1–V3) oppure ST discordante sproporzionato (STE/S ≥ 25%, Smith) → vedi il modulo OMI (Sgarbossa / Smith / Barcellona).'],
+        'AHA/ACCF/HRS 2009 (parte IV); Sgarbossa NEJM 1996; Smith Ann Emerg Med 2012');
     } else if (mo.qsV1 && qrs >= 110 && qrs < 120) {
       F.add(CAT.COND, 'bbsx-inc', 'Blocco di branca sinistra incompleto', LIV.ALTO,
         ['QRS ' + r0(qrs) + ' ms (110–119) con morfologia BBS-simile, assenza di q settale in I, V5–V6.'], 'AHA/ACCF/HRS 2009');
@@ -689,8 +695,38 @@
     }
 
     // IVS
-    if (ctx.lbbb || ctx.paced || ctx.wpw) {
-      if (Object.keys(d.leads || {}).length) F.add(CAT.CAMERE, 'ivs-nv', 'Criteri di voltaggio per IVS non applicabili', LIV.INFO, ['Non validati in presenza di BBS, ritmo stimolato o pre-eccitazione.'], 'AHA/ACCF/HRS 2009');
+    // 1.5.3 (segnalazione di Cimox 27/11: BBS con probabile IVS non segnalata): con BBS i criteri di voltaggio
+    // classici perdono specificità, ma alcuni criteri restano utili per «includere» l'IVS (alta specificità, bassa
+    // sensibilità): SV2 + RV6 > 45 mm (Klein 1984), Sokolow-Lyon ≥ 30 mm (spec. 88%) e RaVL ≥ 11 mm (spec. 97%)
+    // (Burgos 2017, ipertesi con BBS, eco come riferimento), anomalia atriale sinistra (PTFV1 ≥ 0,04 mm·s) e
+    // QRS > 155 ms (Mehta 2000: AAS sens. ~80%, spec. ~90%). L'IVS all'eco è presente in ~2/3 dei pazienti con BBS.
+    if (ctx.lbbb && !ctx.paced && !ctx.wpw) {
+      const SV1 = amp(d, 'V1', 's'), SV2 = amp(d, 'V2', 's'), SV3b = amp(d, 'V3', 's'), RV5 = amp(d, 'V5', 'r'), RV6 = amp(d, 'V6', 'r'), RaVL = amp(d, 'aVL', 'r');
+      const crit = [], mis = [];
+      if (SV2 !== null && RV6 !== null) { const v = SV2 + RV6; mis.push('SV2 + RV6 = ' + f1(v) + ' mm'); if (v > 45) crit.push('SV2 + RV6 = ' + f1(v) + ' mm (> 45, Klein 1984)'); }
+      const sv = SV1 !== null ? SV1 : SV2;
+      if (sv !== null && (RV5 !== null || RV6 !== null)) { const v = sv + Math.max(RV5 || 0, RV6 || 0); mis.push('Sokolow-Lyon ' + f1(v) + ' mm' + (SV1 === null ? ' (con SV2)' : '')); if (v >= 30) crit.push('Sokolow-Lyon ' + (SV1 === null ? '(SV2 + RV5/V6) ' : '') + '= ' + f1(v) + ' mm (≥ 30 con BBS, specificità ~88%)'); }
+      if (RaVL !== null) { mis.push('RaVL ' + f1(RaVL) + ' mm'); if (RaVL >= 11) crit.push('R in aVL = ' + f1(RaVL) + ' mm (≥ 11, specificità ~97%)'); }
+      if (SV3b !== null) mis.push('SV3 ' + f1(SV3b) + ' mm');
+      const laa = m.ptfv1 !== undefined && m.ptfv1 >= 0.04;
+      if (laa) crit.push('anomalia atriale sinistra (PTFV1 ' + f2(m.ptfv1) + ' mm·s ≥ 0,04)' + (m.qrs !== null && m.qrs > 155 ? ' con QRS ' + r0(m.qrs) + ' ms (> 155)' : '') + ' (Mehta 2000)');
+      else if (m.qrs !== null && m.qrs > 155) mis.push('QRS ' + r0(m.qrs) + ' ms (> 155: associato a IVS se c\'è anomalia atriale sinistra – misura la P in V1)');
+      const daVer = d.fotoDaVerificare;
+      const fonte = 'Klein RC et al. Am Heart J 1984; Mehta A et al. Am J Cardiol 2000;85:354; Burgos PFM et al. Arq Bras Cardiol 2017;108:47; Hancock EW et al. AHA/ACCF/HRS 2009 (parte V)';
+      if (crit.length) {
+        ctx.lvh = true;
+        F.add(CAT.CAMERE, 'ivs-bbs', 'Ipertrofia ventricolare sinistra probabile (criteri specifici per BBS)' + (daVer ? ' – da verificare' : ''), daVer ? LIV.INFO : LIV.MOD,
+          (daVer ? ['DA VERIFICARE: ampiezze lette dalla foto. Misura S in V1–V3 e R in V5, V6, aVL con lo strumento «Onda R/S» e conferma.'] : []).concat(['Criteri positivi: ' + crit.join('; ') + '.',
+            'Con BBS i criteri di voltaggio hanno specificità alta ma sensibilità bassa (13–22% per Sokolow): un criterio positivo rende probabile l\'IVS.',
+            'L\'IVS è presente all\'eco in circa 2 pazienti su 3 con BBS (ipertesi).']), fonte, 'Confermare con ecocardiogramma (massa VS, FEVS, dissincronia).');
+      } else if (Object.keys(d.leads || {}).length) {
+        F.add(CAT.CAMERE, 'ivs-bbs-neg', 'IVS con BBS: criteri specifici non soddisfatti – non esclusa', LIV.INFO,
+          [(mis.length ? 'Misure: ' + mis.join('; ') + '. ' : '') + 'Soglie con BBS: SV2 + RV6 > 45 mm; Sokolow ≥ 30 mm; RaVL ≥ 11 mm; anomalia atriale sinistra (± QRS > 155 ms).',
+            'Sensibilità bassa: criteri negativi NON escludono l\'IVS (presente all\'eco in ~2/3 dei BBS). Se il dubbio clinico c\'è (ipertensione, valvulopatia aortica, voltaggi alti a vista) → ecocardiogramma.',
+            daVer ? 'Ampiezze lette dalla foto: le S profonde in V2–V3 e le R alte possono essere sottostimate (tracce sovrapposte) → misurale con lo strumento «Onda R/S».' : ''].filter(Boolean), fonte);
+      }
+    } else if (ctx.paced || ctx.wpw) {
+      if (Object.keys(d.leads || {}).length) F.add(CAT.CAMERE, 'ivs-nv', 'Criteri di voltaggio per IVS non applicabili', LIV.INFO, ['Non validati in presenza di ritmo stimolato o pre-eccitazione.'], 'AHA/ACCF/HRS 2009');
     } else {
       const SV1 = amp(d, 'V1', 's'), RV5 = amp(d, 'V5', 'r'), RV6 = amp(d, 'V6', 'r');
       const RaVL = amp(d, 'aVL', 'r'), SV3 = amp(d, 'V3', 's'), SV4 = amp(d, 'V4', 's');
@@ -1379,7 +1415,12 @@
         omi,
         nLette: lette.length, lette, nonLette, affidabilita: affid,
         ritmo: ritmoF ? ritmoF.titolo : 'Ritmo non classificato',
-        critici: F.list.filter(f => f.livello === LIV.CRIT).length
+        critici: F.list.filter(f => f.livello === LIV.CRIT).length,
+        // 1.5.3: CONCLUSIONE immediata (richiesta di Cimox 27/11): diagnosi principali in una riga, in ordine di
+        // gravità, come la lettura stampata dall'elettrocardiografo; l'operatore conferma o corregge
+        conclusione: [ritmoF ? ritmoF.titolo : null].concat(F.list.filter(f => f !== ritmoF && f.cat !== CAT.QUALITA && f.cat !== CAT.RITMO &&
+          ([LIV.CRIT, LIV.ALTO, LIV.MOD].indexOf(f.livello) >= 0 || ['ripol-sec-bbs', 'ivs'].indexOf(f.id) >= 0 || (f.id === 'ivs-bbs')))
+          .sort((a, b) => ORDINE_LIV[a.livello] - ORDINE_LIV[b.livello]).map(f => f.titolo)).filter(Boolean).slice(0, 8)
       },
       ctx
     };

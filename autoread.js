@@ -41,6 +41,31 @@
     return { livello: liv, motivo: motivi.join('; '), ritmo, asse, incerte, vuote };
   }
 
+  /* 1.5.3 – MORFOLOGIA DEL QRS dalla lettura automatica (richiesta di Cimox 27/11: «BBS evidente, l'app deve
+     confermarlo subito»). Criteri AHA/ACCF/HRS 2009 tradotti in misure: BBS = QRS ≥ 120 ms + QS/rS in V1 (o V2)
+     + R larga/a lento picco senza q in ≥ 3 tra I, aVL, V5, V6; BBDx = QRS ≥ 120 ms + R′ in V1/V2 + S larga
+     (≥ 40 ms) in I o V6. Prudenza: proposto solo se la morfologia è coerente in più derivazioni; mai con lettura
+     insufficiente; sempre evidenziato «da verificare». Ritorna null se nessuna morfologia è riconosciuta. */
+  function morphology(A, qrs) {
+    if (!A || !A.ok || A.leadsUnreliable || qrs == null || qrs < 120) return null;
+    const L = A.leads || {};
+    const ok = k => L[k] && !L[k].unrel;
+    const neg = k => ok(k) && L[k].S != null && L[k].S >= 3 && (L[k].R == null || L[k].R <= Math.max(2, 0.25 * L[k].S)) && !(L[k].Rp >= 1);
+    const latR = k => ok(k) && L[k].R != null && L[k].R >= 3 && (L[k].S == null || L[k].S <= 0.3 * L[k].R) && !(L[k].Q >= 0.5) &&
+      ((L[k].rpt != null && L[k].rpt >= 50) || (L[k].rW != null && L[k].rW >= 40));
+    const rsr = k => ok(k) && L[k].Rp != null && L[k].Rp >= 1 && L[k].S != null && L[k].S >= 0.5;
+    const sWide = k => ok(k) && L[k].sW != null && L[k].sW >= 40 && L[k].S >= 1;
+    const lat = ['I', 'aVL', 'V5', 'V6'].filter(latR);
+    const v1neg = ['V1', 'V2'].filter(neg);
+    const out = { prove: [] };
+    if (v1neg.length && lat.length >= 3) {
+      out.lbbb = true; out.prove.push('QS/rS in ' + v1neg.join(', '), 'R larghe senza q in ' + lat.join(', '));
+    }
+    const v1r = ['V1', 'V2'].filter(rsr), sw = ['I', 'V6'].filter(sWide);
+    if (!out.lbbb && v1r.length && sw.length) { out.rbbb = true; out.prove.push('rsR′ in ' + v1r.join(', '), 'S larga in ' + sw.join(', ')); }
+    return out.lbbb || out.rbbb ? out : null;
+  }
+
   /* apply: A = lettura (summarizeAuto), data = caso, set(path, value) = scrittura (rispetta i valori manuali)
      ritorna { lowConf: {path: motivo}, stEsclusi: [], conf } */
   function apply(A, data, set, opts) {
@@ -83,7 +108,11 @@
     if (opts.all !== false) {
       const M = A.machine || {}, G = A.glob || {}, R = A.rhythm;
       const pick = (m, g) => m != null ? m : (g != null ? Math.round(g) : null);
-      const prFoto = photo && R && R.pPresenti && !unrel && A.quality && A.quality.score >= 70 && G.pr ? G.pr : null;
+      // 1.5.3 (caso 14: PR 244 letto vs 184 stampato → falso BAV I): PR dalla foto solo se coerente tra i battiti
+      // (dispersione ≤ 45 ms; sui casi reali con PR corretto 6–36 ms, nel caso 14 60 ms)
+      const prCoerente = !R || R.prSpread == null || R.prSpread <= 45;
+      const prFoto = photo && R && R.pPresenti && !unrel && A.quality && A.quality.score >= 70 && G.pr && prCoerente ? G.pr : null;
+      if (photo && R && R.pPresenti && G.pr && !prCoerente) lowConf['intervalli.pr'] = 'PR dalla foto incoerente tra i battiti (' + Math.round(G.pr) + ' ms, dispersione ' + Math.round(R.prSpread) + ' ms): non proposto, misuralo con lo strumento «PR»';
       const iv = {
         'intervalli.pr': photo ? prFoto : pick(M.pr, G.pr),
         'intervalli.qrs': unrel ? null : pick(M.qrs, G.qrs),
@@ -112,6 +141,15 @@
         }
         if (R.rr && R.rr.length >= 3) { const mx = Math.max.apply(null, R.rr), md = R.rr.slice().sort((a, b) => a - b)[R.rr.length >> 1]; if (mx >= 2000 && mx >= 1.5 * md) set('ritmo.pausaMax', String(Math.round(mx))); }
       } else if (M.fc != null) set('ritmo.fc', String(M.fc));
+      // 1.5.3: blocco di branca riconosciuto automaticamente (morfologia + QRS ≥ 120 ms)
+      const qrsUse = iv['intervalli.qrs'];
+      const mo = unrel ? null : morphology(A, qrsUse);
+      if (mo) {
+        const why = 'morfologia riconosciuta dalla lettura automatica (' + mo.prove.join('; ') + '): verifica';
+        if (mo.lbbb) { set('morfologia.qsV1', true); set('morfologia.rLargaLat', true); lowConf['morfologia.qsV1'] = why; lowConf['morfologia.rLargaLat'] = why; }
+        if (mo.rbbb) { set('morfologia.rsrV1', true); set('morfologia.sLarga', true); lowConf['morfologia.rsrV1'] = why; lowConf['morfologia.sLarga'] = why; }
+        data.autoMorph = mo;
+      }
       if (M.assi && M.assi.qrs != null) set('asse.gradi', String(M.assi.qrs));
       // 1.5.0: asse calcolato dalla foto sull'intero tracciato (6 periferiche, battito mediano): sulle 9 foto reali
       // scarto ≤ 4° dall'asse stampato; proposto solo con affidabilità almeno media
@@ -120,7 +158,7 @@
     return { lowConf, stEsclusi, conf };
   }
 
-  const API = { confidence, apply, isIrregular, LEADS };
+  const API = { confidence, apply, isIrregular, morphology, LEADS };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.ECGAuto = API;
 })(typeof window !== 'undefined' ? window : this);
