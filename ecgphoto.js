@@ -1434,9 +1434,13 @@
 
     // 9) indice di qualità
     const sh = sharpness(chS, dkS.thr);
-    const sharpN0 = sh.contrast > 0 ? sh.edge / sh.contrast * (7 / pxmm) : 0; // indipendente da risoluzione e contrasto
+    // 1.5.2: il fattore 7/px_mm penalizzava le foto ad ALTA risoluzione (telefoni moderni, foto ridotte a 2600 px →
+    // ~9 px/mm): una foto nitida risultava «mossa» (qualità 40, nessuna lettura; segnalazione 27/11). Sopra 7 px/mm
+    // non si penalizza più; sotto 7 px/mm resta la compensazione delle immagini piccole.
+    const kRes = Math.max(1, 7 / pxmm);
+    const sharpN0 = sh.contrast > 0 ? sh.edge / sh.contrast * kRes : 0;
     // 1.3.0: nitidezza direzionale (foto mossa: bordi persi in una sola direzione)
-    const sharpD = sh.contrast > 0 ? Math.min(sh.ex, sh.ey) / sh.contrast * (7 / pxmm) : 0;
+    const sharpD = sh.contrast > 0 ? Math.min(sh.ex, sh.ey) / sh.contrast * kRes : 0;
     const sharpN = Math.min(sharpN0, sharpD);
     const mossa = sh.dir < 0.5 || sharpD < 0.22;
     const covs = Object.values(leads).map(l => l.cov).filter(v => v != null);

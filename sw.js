@@ -1,5 +1,5 @@
 /* ECGcheck service worker — offline + aggiornamenti */
-const VERSION = 'ecgcheck-v1.5.1';
+const VERSION = 'ecgcheck-v1.5.2';
 const CORE = [
   './', './index.html', './style.css', './app.js', './criteria.js', './tools.js', './criteri.js', './minipdf.js', './ecgpdf.js', './ecgphoto.js', './autoread.js', './twave.js', './ddx.js', './manifest.json',
   './lib/pdf.min.mjs', './lib/pdf.worker.min.mjs',

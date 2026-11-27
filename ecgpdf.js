@@ -422,7 +422,7 @@
     const rr = []; for (let i = 1; i < beats.length; i++) rr.push((beats[i].c - beats[i - 1].c) * DT);
     const ps = [];
     beats.forEach(b => {
-      const lo = Math.max(0, b.on - 140), hi = b.on - 30;
+      const lo = Math.max(0, b.on - 140), hi = b.on - 15; // 1.5.2: fino a 30 ms prima del QRS (PR corto ~100 ms: il picco della P cadeva fuori dalla finestra)
       if (lo >= hi) return;
       // 1.3.1: linea di base anche dal tratto TP (prima della P): la base "PR" subito prima del QRS può
       // cadere sulla coda della P e ridurne l'ampiezza (P piccole negli screenshot a bassa risoluzione)
@@ -442,10 +442,14 @@
     let valid = ps.filter(Boolean);
     // 1.3.4: un singolo battito con picco anomalo (coda della T, rumore) non deve annullare il riconoscimento
     // delle P: si tengono le P in posizione coerente (± 40 ms dalla mediana del picco)
-    if (valid.length >= 3) { const mk = median(valid.map(p => p.pk)); const coh = valid.filter(p => Math.abs(p.pk - mk) <= 40); if (coh.length >= Math.max(2, ps.length * 0.7)) valid = coh; }
+    if (valid.length >= 3) { const mk = median(valid.map(p => p.pk)); const coh = valid.filter(p => Math.abs(p.pk - mk) <= 40); if (coh.length >= Math.max(3, ps.length * 0.6)) valid = coh; }
     const prs = valid.map(p => p.pr), pks = valid.map(p => p.pk);
     // coerenza: P presenti in ≥ 70% dei battiti e in posizione costante rispetto al QRS
-    const consistent = valid.length >= Math.max(2, ps.length * 0.7) && prs.length && ((Math.max.apply(null, prs) - Math.min.apply(null, prs)) <= 60 || (Math.max.apply(null, pks) - Math.min.apply(null, pks)) <= 50);
+    const spreadPk = pks.length ? Math.max.apply(null, pks) - Math.min.apply(null, pks) : 999, spreadPr = prs.length ? Math.max.apply(null, prs) - Math.min.apply(null, prs) : 999;
+    // 1.5.2: P riconosciute anche se mancano in 1–2 battiti su 6 (inizio del QRS mal individuato), ma solo con
+    // posizione molto costante (picco ± 15 ms) e ampiezza ≥ 0,5 mm: evita false P nella FA
+    const ampOk = valid.length && median(valid.map(p => p.amp)) >= 0.5;
+    const consistent = prs.length && ((valid.length >= Math.max(2, ps.length * 0.7) && (spreadPr <= 60 || spreadPk <= 50)) || (valid.length >= 4 && valid.length >= ps.length * 0.6 && spreadPk <= 30 && ampOk));
     return {
       rr, rrMean: mean(rr), hr: 60000 / mean(rr), rrVar: Math.max.apply(null, rr) - Math.min.apply(null, rr),
       pPresenti: consistent, pAmp: valid.length ? median(valid.map(p => p.amp)) : null,
