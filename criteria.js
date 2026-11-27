@@ -8,8 +8,8 @@
 
   const META = {
     app: 'ECGcheck',
-    version: '1.5.3',
-    criteriaVersion: '2026.11.8',
+    version: '1.5.4',
+    criteriaVersion: '2026.11.9',
     lastReview: '2026-11-23',
     nextReview: '2026-11-30',
     riferimenti: [
@@ -108,7 +108,7 @@
   function Findings() { this.list = []; }
   Findings.prototype.add = function (cat, id, titolo, livello, dettagli, rif, azione, tag) {
     if (this.has(id)) return;
-    this.list.push({ cat, id, titolo, livello, dettagli: dettagli || [], rif: rif || '', azione: azione || '', tag: tag || '' });
+    const f = { cat, id, titolo, livello, dettagli: dettagli || [], rif: rif || '', azione: azione || '', tag: tag || '' }; this.list.push(f); return f;
   };
   Findings.prototype.has = function (id) { return this.list.some(f => f.id === id); };
 
@@ -550,9 +550,13 @@
 
     if (m.pr !== null && ['sinusale', 'atriale', undefined].includes(ctx.ritmo) && !ctx.pacingAtriale) {
       if (m.pr > 200) {
-        F.add(CAT.COND, 'bav1', 'Blocco AV di I grado', m.pr > 300 ? LIV.ALTO : LIV.MOD,
-          ['PR ' + r0(m.pr) + ' ms (> 200 ms).', m.pr > 300 ? 'PR > 300 ms: possibile "pseudo-pacemaker syndrome".' : 'Ogni P è condotta.'],
+        // 1.5.4: PR dalla foto (non verificato) appena sopra 200 ms: l'errore di lettura è ~±20 ms → «al limite, verifica»
+        const prFoto = d.fotoDaVerificare && d.lowConf && d.lowConf['intervalli.pr'] && !(d.manual || {})['intervalli.pr'];
+        const limite = prFoto && m.pr <= 225;
+        const fb = F.add(CAT.COND, 'bav1', 'Blocco AV di I grado' + (limite ? ' possibile (PR ' + r0(m.pr) + ' ms al limite: verifica)' : ''), m.pr > 300 ? LIV.ALTO : LIV.MOD,
+          ['PR ' + r0(m.pr) + ' ms (> 200 ms).', m.pr > 300 ? 'PR > 300 ms: possibile "pseudo-pacemaker syndrome".' : 'Ogni P è condotta.'].concat(limite ? ['PR letto dalla foto, errore tipico ± 20 ms: misuralo con lo strumento «PR» (dall\'inizio della P all\'inizio del QRS nella derivazione in cui il QRS inizia prima) o confrontalo con il PR stampato.'] : []),
           'AHA/ACCF/HRS 2009; ACC/AHA/HRS 2018');
+        if (!limite) fb.breve = 'PR ' + r0(m.pr) + ' ms';
         ctx.bav1 = true;
       } else if (m.pr < 120) {
         if (r.ondaDelta) {
@@ -597,11 +601,12 @@
     const aha = mo.qsV1 && (mo.notchLat || mo.rLargaLat) && qrs >= 120;
     if (strauss || aha) {
       lbbb = true;
-      F.add(CAT.COND, 'bbsx', 'Blocco di branca sinistra completo', LIV.ALTO,
+      const fbb = F.add(CAT.COND, 'bbsx', 'Blocco di branca sinistra completo', LIV.ALTO,
         ['QRS ' + r0(qrs) + ' ms, QS/rS in V1, R larghe con notch/slurring in I, aVL, V5–V6.',
           strauss ? 'Soddisfa anche i criteri di Strauss (QRS ≥ ' + (sesso === 'F' ? 130 : 140) + ' ms + notch medio-QRS in ≥ 2 derivazioni): "BBS vero", predittore di risposta alla CRT.' : 'Criteri AHA/ACCF/HRS 2009 (Strauss non soddisfatti).',
           'Il BBS nuovo da solo NON è più uno STEMI-equivalente (ACC 2022): applicare Sgarbossa / Smith / Barcellona.'],
         'AHA/ACCF/HRS 2009; Strauss 2011; ACC 2022 ECDP; ESC 2023 ACS');
+      fbb.breve = 'QRS ' + r0(qrs) + ' ms, ' + (d.autoMorph && d.autoMorph.lbbb && d.autoMorph.prove ? d.autoMorph.prove.join(', ') : 'QS/rS in V1–V2, R larghe senza q in I, aVL, V5–V6') + (strauss ? ', criteri di Strauss' : '');
       // 1.5.3: referto immediato della ripolarizzazione secondaria (richiesta di Cimox: «Alterazioni della
       // ripolarizzazione da disturbo della conduzione»); lo ST resta valutato con Sgarbossa/Smith/Barcellona
       F.add(CAT.RIPOL, 'ripol-sec-bbs', 'Alterazioni secondarie della ripolarizzazione (da BBS)', LIV.INFO,
@@ -666,6 +671,67 @@
   /* =====================================================================
      5. ATRI E VENTRICOLI
      ===================================================================== */
+  /* 1.5.4 – PANNELLO IPERTROFIA (richiesta di Cimox 27/11: «lettura automatica dell'ipertrofia destra e sinistra con
+     gli ultimi criteri validati e descrizione dei criteri utilizzati»). Elenca OGNI criterio con valore misurato,
+     soglia ed esito (positivo / negativo / non misurabile), sia per l'IVS sia per l'IVD; con BBS usa i criteri
+     specifici per BBS. «≥» = valore minimo (tracce sovrapposte sulla foto). */
+  function ipertrofiaPannello(d, m, F, ctx) {
+    if (!Object.keys(d.leads || {}).length || ctx.paced || ctx.wpw) return;
+    const sesso = (d.paziente || {}).sesso;
+    const lc = d.lowConf || {}, man = d.manual || {};
+    const lim = (l, k) => !man['leads.' + l + '.' + k] && /sovrapposta|minimo/.test(lc['leads.' + l + '.' + k] || '');
+    const v = (l, k) => amp(d, l, k);
+    const fm = (x, isMin) => x === null ? 'n.m.' : (isMin ? '≥ ' : '') + f1(x) + ' mm';
+    const righe = [];
+    const riga = (nome, valore, soglia, esito, fonte) => righe.push({ nome, valore, soglia, esito, fonte });
+    const sum = (parts) => { if (parts.some(p => p[0] === null)) return [null, false]; return [parts.reduce((a, p) => a + p[0], 0), parts.some(p => p[1])]; };
+    const es = (val, ok, isMin) => val === null ? 'non misurabile' : ok ? 'POSITIVO' : isMin ? 'negativo (valore minimo: verifica)' : 'negativo';
+    const SV1 = [v('V1', 's'), lim('V1', 's')], SV2 = [v('V2', 's'), lim('V2', 's')], SV3 = [v('V3', 's'), lim('V3', 's')], SV4 = [v('V4', 's'), lim('V4', 's')];
+    const RV5 = [v('V5', 'r'), lim('V5', 'r')], RV6 = [v('V6', 'r'), lim('V6', 'r')], RaVL = [v('aVL', 'r'), lim('aVL', 'r')], RV1 = [v('V1', 'r'), lim('V1', 'r')];
+    const SV5 = [v('V5', 's'), lim('V5', 's')], SV6 = [v('V6', 's'), lim('V6', 's')];
+    const RV56 = RV5[0] === null && RV6[0] === null ? [null, false] : (RV5[0] || 0) >= (RV6[0] || 0) ? RV5 : RV6;
+    if (ctx.lbbb) {
+      { const [x, mn] = sum([SV2, RV6]); riga('SV2 + RV6 (Klein 1984, specifico per BBS)', fm(x, mn), '> 45 mm', es(x, x !== null && x > 45, mn), 'Klein, Am Heart J 1984'); }
+      { const [x, mn] = sum([SV1[0] !== null ? SV1 : SV2, RV56]); riga('Sokolow-Lyon SV1 + RV5/V6 (soglia per BBS)', fm(x, mn), '≥ 30 mm', es(x, x !== null && x >= 30, mn), 'Burgos, Arq Bras Cardiol 2017 (spec. 88%)'); }
+      riga('R in aVL (soglia per BBS)', fm(RaVL[0], RaVL[1]), '≥ 11 mm', es(RaVL[0], RaVL[0] !== null && RaVL[0] >= 11, RaVL[1]), 'Burgos 2017 (spec. 97%)');
+      const laa = m.ptfv1 !== undefined ? m.ptfv1 >= 0.04 : null;
+      riga('Anomalia atriale sinistra (PTFV1) ± QRS > 155 ms', laa === null ? 'PTFV1 n.m.; QRS ' + (m.qrs !== null ? r0(m.qrs) + ' ms' : 'n.m.') : 'PTFV1 ' + f2(m.ptfv1) + ' mm·s; QRS ' + (m.qrs !== null ? r0(m.qrs) : '—') + ' ms', 'PTFV1 ≥ 0,04 mm·s', laa === null ? 'non misurabile' : laa ? 'POSITIVO' : 'negativo', 'Mehta, Am J Cardiol 2000');
+      riga('Criteri di IVD', '—', '—', 'non applicabili con BBS', 'AHA/ACCF/HRS 2009');
+    } else {
+      { const [x, mn] = sum([SV1, RV56]); riga('Sokolow-Lyon SV1 + RV5/V6', fm(x, mn), '≥ 35 mm', es(x, x !== null && x >= 35, mn), 'Sokolow-Lyon 1949; AHA/ACCF/HRS 2009'); }
+      const cs = sesso === 'F' ? 20 : 28;
+      { const [x, mn] = sum([RaVL, SV3]); riga('Cornell RaVL + SV3', fm(x, mn), '> ' + cs + ' mm (' + (sesso === 'F' ? 'donna' : 'uomo') + ')', es(x, x !== null && x > cs, mn), 'Casale 1985');
+        const cp = x !== null && m.qrs !== null ? (x + (sesso === 'F' ? 6 : 0)) * m.qrs : null;
+        riga('Prodotto di Cornell', cp === null ? 'n.m.' : (mn ? '≥ ' : '') + r0(cp) + ' mm·ms', '≥ 2440 mm·ms', es(cp, cp !== null && cp >= 2440, mn), 'Molloy 1992'); }
+      riga('R in aVL', fm(RaVL[0], RaVL[1]), '> 11 mm', es(RaVL[0], RaVL[0] !== null && RaVL[0] > 11, RaVL[1]), 'AHA/ACCF/HRS 2009');
+      { let deep = null, dl = null, dm = false; LEADS.forEach(l => { const x = v(l, 's'); if (x !== null && (deep === null || x > deep)) { deep = x; dl = l; dm = lim(l, 's'); } });
+        const pl = deep !== null && SV4[0] !== null ? (dl === 'V4' ? 2 * SV4[0] : deep + SV4[0]) : null; const ps = sesso === 'F' ? 23 : 28;
+        riga('Peguero-Lo Presti S più profonda' + (dl ? ' (' + dl + ')' : '') + ' + SV4', fm(pl, dm || SV4[1]), '≥ ' + ps + ' mm', es(pl, pl !== null && pl >= ps, dm || SV4[1]), 'Peguero, JACC 2017'); }
+      riga('Pattern «strain» (ST-T secondario laterale)', ctx.strain ? 'presente' : 'assente', '—', ctx.strain ? 'POSITIVO (supporto)' : 'negativo', 'AHA/ACCF/HRS 2009');
+      // IVD
+      if (!ctx.rbbb) {
+        riga('IVD: R in V1', fm(RV1[0], RV1[1]), '≥ 7 mm', es(RV1[0], RV1[0] !== null && RV1[0] >= 7, RV1[1]), 'AHA/ACCF/HRS 2009');
+        const rs = RV1[0] !== null && SV1[0] ? RV1[0] / SV1[0] : null;
+        riga('IVD: R/S in V1', rs === null ? 'n.m.' : f1(rs), '> 1 (QRS < 120 ms)', rs === null ? 'non misurabile' : rs > 1 && (m.qrs === null || m.qrs < 120) ? 'POSITIVO' : 'negativo', 'AHA/ACCF/HRS 2009');
+        const S56 = SV5[0] === null && SV6[0] === null ? [null, false] : (SV5[0] || 0) >= (SV6[0] || 0) ? SV5 : SV6;
+        riga('IVD: S in V5 o V6', fm(S56[0], S56[1]), '≥ 7 mm', es(S56[0], S56[0] !== null && S56[0] >= 7, S56[1]), 'AHA/ACCF/HRS 2009');
+        { const [x, mn] = sum([RV1, S56]); riga('IVD: RV1 + SV5/V6 (Sokolow-Lyon destro)', fm(x, mn), '> 10,5 mm', es(x, x !== null && x > 10.5, mn), 'Sokolow-Lyon 1949'); }
+        riga('IVD: asse', m.asse !== null && m.asse !== undefined ? r0(m.asse) + '°' : 'n.m.', '≥ +110°', m.asse === null || m.asse === undefined ? 'non misurabile' : m.asse >= 110 && m.asse <= 180 ? 'POSITIVO' : 'negativo', 'AHA/ACCF/HRS 2009');
+      } else {
+        const rp = RV1[0];
+        riga('IVD con BBDx: R′ in V1', fm(rp, RV1[1]), '> 15 mm', es(rp, rp !== null && rp > 15, RV1[1]), 'AHA/ACCF/HRS 2009');
+        riga('IVD con BBDx: asse', m.asse !== null && m.asse !== undefined ? r0(m.asse) + '°' : 'n.m.', '≥ +110°', m.asse === null || m.asse === undefined ? 'non misurabile' : m.asse >= 110 && m.asse <= 180 ? 'POSITIVO' : 'negativo', 'AHA/ACCF/HRS 2009');
+      }
+    }
+    const pos = righe.filter(r => /^POSITIVO/.test(r.esito)).length, nm = righe.filter(r => r.esito === 'non misurabile').length;
+    const f = F.add(CAT.CAMERE, 'ipertrofia-pannello', 'Ipertrofia ventricolare: criteri valutati (' + pos + ' positivi, ' + nm + ' non misurabili)', LIV.INFO,
+      righe.map(r => r.nome + ': ' + r.valore + ' (soglia ' + r.soglia + ') → ' + r.esito + ' [' + r.fonte + ']').concat([
+        'Sensibilità dei criteri ECG di voltaggio bassa (~20–50%), specificità alta (~85–95%): criteri negativi NON escludono l\'ipertrofia; la conferma è ecocardiografica.',
+        d.fotoDaVerificare ? 'Ampiezze lette dalla foto: le S profonde e le R alte che toccano la riga vicina sono valori minimi («≥»); misurale con lo strumento «Onda R/S» e il pannello si ricalcola.' : '']).filter(Boolean),
+      'Hancock EW et al. AHA/ACCF/HRS 2009 (parte V); Peguero JG et al. JACC 2017;69:1694; Klein 1984; Mehta 2000; Burgos 2017');
+    f.tabella = righe;
+  }
+
   function analizzaCamere(d, m, F, ctx) {
     const a = d.atri || {};
     const sesso = (d.paziente || {}).sesso;
@@ -719,6 +785,11 @@
           (daVer ? ['DA VERIFICARE: ampiezze lette dalla foto. Misura S in V1–V3 e R in V5, V6, aVL con lo strumento «Onda R/S» e conferma.'] : []).concat(['Criteri positivi: ' + crit.join('; ') + '.',
             'Con BBS i criteri di voltaggio hanno specificità alta ma sensibilità bassa (13–22% per Sokolow): un criterio positivo rende probabile l\'IVS.',
             'L\'IVS è presente all\'eco in circa 2 pazienti su 3 con BBS (ipertesi).']), fonte, 'Confermare con ecocardiogramma (massa VS, FEVS, dissincronia).');
+      } else if ((d.extra || {}).sSovrapposte && d.extra.sSovrapposte.length && daVer) {
+        F.add(CAT.CAMERE, 'ivs-bbs-poss', 'Ipertrofia ventricolare sinistra possibile con BBS – S profonde da misurare', LIV.MOD,
+          ['Le S di ' + d.extra.sSovrapposte.join(', ') + ' sono così profonde da toccare/attraversare la riga sottostante del foglio (ampiezza sottostimata dalla lettura automatica).',
+            'Misura SV2 (e SV1, SV3) e RV6 con lo strumento «Onda R/S»: SV2 + RV6 > 45 mm (Klein 1984) o Sokolow ≥ 30 mm rendono probabile l\'IVS con BBS.',
+            mis.length ? 'Valori letti (minimi): ' + mis.join('; ') + '.' : ''].filter(Boolean), fonte, 'Confermare con ecocardiogramma.');
       } else if (Object.keys(d.leads || {}).length) {
         F.add(CAT.CAMERE, 'ivs-bbs-neg', 'IVS con BBS: criteri specifici non soddisfatti – non esclusa', LIV.INFO,
           [(mis.length ? 'Misure: ' + mis.join('; ') + '. ' : '') + 'Soglie con BBS: SV2 + RV6 > 45 mm; Sokolow ≥ 30 mm; RaVL ≥ 11 mm; anomalia atriale sinistra (± QRS > 155 ms).',
@@ -802,6 +873,7 @@
         F.add(CAT.CAMERE, 'ivd-poss', 'Ipertrofia ventricolare destra possibile (1 criterio)', LIV.INFO, ['Criterio: ' + c[0] + '.'], 'AHA/ACCF/HRS 2009');
       }
     }
+    ipertrofiaPannello(d, m, F, ctx);
 
     // Bassi voltaggi
     const limb = LIMB.map(l => qrsAmp(d, l));
@@ -1419,8 +1491,8 @@
         // 1.5.3: CONCLUSIONE immediata (richiesta di Cimox 27/11): diagnosi principali in una riga, in ordine di
         // gravità, come la lettura stampata dall'elettrocardiografo; l'operatore conferma o corregge
         conclusione: [ritmoF ? ritmoF.titolo : null].concat(F.list.filter(f => f !== ritmoF && f.cat !== CAT.QUALITA && f.cat !== CAT.RITMO &&
-          ([LIV.CRIT, LIV.ALTO, LIV.MOD].indexOf(f.livello) >= 0 || ['ripol-sec-bbs', 'ivs'].indexOf(f.id) >= 0 || (f.id === 'ivs-bbs')))
-          .sort((a, b) => ORDINE_LIV[a.livello] - ORDINE_LIV[b.livello]).map(f => f.titolo)).filter(Boolean).slice(0, 8)
+          ([LIV.CRIT, LIV.ALTO, LIV.MOD].indexOf(f.livello) >= 0 || ['ripol-sec-bbs', 'ivs', 'ivs-bbs', 'ivs-bbs-poss', 'ivd', 'ivd-poss'].indexOf(f.id) >= 0))
+          .sort((a, b) => ORDINE_LIV[a.livello] - ORDINE_LIV[b.livello]).map(f => f.titolo + (f.breve ? ' (' + f.breve + ')' : ''))).filter(Boolean).slice(0, 8)
       },
       ctx
     };

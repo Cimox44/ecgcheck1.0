@@ -58,8 +58,16 @@
     const lat = ['I', 'aVL', 'V5', 'V6'].filter(latR);
     const v1neg = ['V1', 'V2'].filter(neg);
     const out = { prove: [] };
+    // 1.5.4 (caso 15: V1–V2 illeggibili per le S profonde sovrapposte alla riga sottostante): con R laterali larghe,
+    // a picco tardivo (≥ 55 ms) e senza S in ≥ 3 tra I, aVL, V5, V6, QRS ≥ 130 ms e nessun segno di BBDx
+    // (R′ o R larga in V1–V2, S larga in I/V6) il quadro è comunque quello del BBS
+    const v1rLarga = ['V1', 'V2'].some(k => ok(k) && L[k].R != null && L[k].R >= 3 && L[k].rW != null && L[k].rW >= 40 && (L[k].S == null || L[k].R >= L[k].S));
+    const latForte = lat.filter(k => L[k].rpt != null && L[k].rpt >= 55 && (L[k].S == null || L[k].S <= 0.15 * L[k].R));
+    const noBBD = !['V1', 'V2'].some(rsr) && !['I', 'V6'].some(sWide) && !v1rLarga;
     if (v1neg.length && lat.length >= 3) {
       out.lbbb = true; out.prove.push('QS/rS in ' + v1neg.join(', '), 'R larghe senza q in ' + lat.join(', '));
+    } else if (!v1neg.length && latForte.length >= 3 && qrs >= 130 && noBBD) {
+      out.lbbb = true; out.prove.push('R larghe a picco tardivo senza q né S in ' + latForte.join(', '), 'V1–V2 non leggibili: verifica QS/rS');
     }
     const v1r = ['V1', 'V2'].filter(rsr), sw = ['I', 'V6'].filter(sWide);
     if (!out.lbbb && v1r.length && sw.length) { out.rbbb = true; out.prove.push('rsR′ in ' + v1r.join(', '), 'S larga in ' + sw.join(', ')); }
@@ -149,6 +157,13 @@
         if (mo.lbbb) { set('morfologia.qsV1', true); set('morfologia.rLargaLat', true); lowConf['morfologia.qsV1'] = why; lowConf['morfologia.rLargaLat'] = why; }
         if (mo.rbbb) { set('morfologia.rsrV1', true); set('morfologia.sLarga', true); lowConf['morfologia.rsrV1'] = why; lowConf['morfologia.sLarga'] = why; }
         data.autoMorph = mo;
+      }
+      // 1.5.4: S di V1–V3 che toccano/attraversano la riga sottostante (valore minimo o derivazione illeggibile):
+      // segnale di voltaggi alti da misurare (IVS con BBS, caso 15)
+      if (photo && !unrel) {
+        const sov = ['V1', 'V2', 'V3'].filter(k => A.leads[k] && A.leads[k].sLim && !A.leads[k].unrel);
+        data.extra = data.extra || {};
+        if (sov.length) data.extra.sSovrapposte = sov; else delete data.extra.sSovrapposte;
       }
       if (M.assi && M.assi.qrs != null) set('asse.gradi', String(M.assi.qrs));
       // 1.5.0: asse calcolato dalla foto sull'intero tracciato (6 periferiche, battito mediano): sulle 9 foto reali

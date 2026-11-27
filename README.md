@@ -1,4 +1,4 @@
-# ECGcheck 1.5.3 — Analisi ECG assistita (PWA)
+# ECGcheck 1.5.4 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -93,6 +93,18 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.5.4 (27/11/2026) — conclusione con misure e pannello ipertrofia
+
+| Area | 1.5.3 | 1.5.4 |
+|---|---|---|
+| BBS con V1–V2 illeggibili (S sovrapposte) | non riconosciuto → «ritardo di conduzione aspecifico» | riconosciuto da R laterali larghe a picco tardivo senza q né S (≥ 3 derivazioni), QRS ≥ 130 ms, nessun segno di BBDx |
+| Conclusione | solo titoli | titoli con misure (QRS, PR, prove della morfologia) |
+| Ipertrofia | solo se positiva | pannello in tabella con TUTTI i criteri IVS e IVD: misura, soglia, esito, fonte |
+| IVS con BBS e S sovrapposte | «non esclusa» | «IVS possibile – S profonde da misurare» |
+| BAV I dalla foto con PR 201–225 ms | BAV I | «possibile, PR al limite: verifica» |
+
+Fonti: Hancock EW et al., AHA/ACCF/HRS 2009 parte V; Peguero JG et al., JACC 2017;69:1694; Casale PN et al., 1985 (Cornell); Molloy TJ et al., 1992 (prodotto di Cornell); Klein RC et al., Am Heart J 1984; Mehta A et al., Am J Cardiol 2000; Burgos PFM et al., Arq Bras Cardiol 2017.
 
 ## Aggiornamento 1.5.3 (27/11/2026) — blocchi di branca automatici e conclusione immediata
 

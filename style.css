@@ -248,3 +248,9 @@ input.lowconf, select.lowconf, .lead-table input.lowconf { background: #fff7cc !
 .tw-table td, .tw-table th { padding: 4px 6px; font-size: 13px; vertical-align: top; }
 .tw-table { width: 100%; border-collapse: collapse; } .tw-table tr + tr td { border-top: 1px solid var(--line); }
 .ddx { margin: 4px 0 2px; font-size: 13px; } .ddx summary { cursor: pointer; color: var(--accent, #2563eb); }
+
+/* 1.5.4 pannello criteri di ipertrofia */
+.tblwrap{overflow-x:auto;max-width:100%}
+.crit-tab{width:100%;border-collapse:collapse;font-size:.82rem;margin:.4rem 0}
+.crit-tab th,.crit-tab td{border-bottom:1px solid var(--line,#e3e6ec);padding:.3rem .35rem;text-align:left;vertical-align:top}
+.crit-tab tr.pos td{background:rgba(247,107,21,.12)}
