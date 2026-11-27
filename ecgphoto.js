@@ -1313,6 +1313,7 @@
     };
     pass(null);
     // 1.5.0: ascisse (px) dei QRS sincroni per colonna (≥ 2 derivazioni, almeno il 40% di quelle lette)
+    let consX = null;
     const hints = (() => {
       const byCol = {};
       segs.forEach(sg => { const L = leads[sg.name]; if (!L) return; (byCol[sg.ci] = byCol[sg.ci] || []).push(L.beats.map(bt => L.toX(bt.c) * pxmm)); });
@@ -1328,6 +1329,7 @@
         out[ci] = acc;
         if (list.some(xs => xs.length < acc.length * 0.8)) need = true;
       });
+      consX = out;
       return need ? out : null;
     })();
     if (hints) pass(hints);
@@ -1339,12 +1341,31 @@
     if (rhythmPts) rhythmSources.push({ pts: rhythmPts, name: rhythmName });
     else {
       const ri = (prof.ritmo || [1])[0]; const r = rows[ri];
-      if (r) prof.mappa[ri].forEach(nm => { const sg = segs.find(s => s.name === nm); if (sg) rhythmSources.push({ pts: r.pts.filter(p => p[0] >= sg.x0 && p[0] <= sg.x1), name: nm }); });
+      if (r) prof.mappa[ri].forEach(nm => { const sg = segs.find(s => s.name === nm); if (sg) rhythmSources.push({ pts: r.pts.filter(p => p[0] >= sg.x0 && p[0] <= sg.x1), name: nm, ci: sg.ci, x0: sg.x0, x1: sg.x1 }); });
     }
+    // 1.5.6 (caso 16 sul telefono: «ritmo non classificato», RR 588–1088 ms con ritmo sinusale regolare): nella riga
+    // del ritmo (II a bassi voltaggi) un QRS perso o una T contata come QRS rendeva l'RR irregolare e le P incoerenti.
+    // Si rianalizza la riga con i QRS SINCRONI delle altre derivazioni della stessa colonna (consenso) e si tiene la
+    // lettura con RR più regolari / P più coerenti
+    const relVar = a => { if (!a || a.rr.length < 2) return 9; const v = a.rr.slice().sort((p, q) => p - q); const md = v[v.length >> 1]; return (v[Math.floor(v.length * 0.9)] - v[Math.floor(v.length * 0.1)]) / md; };
     rhythmSources.forEach((src, k) => {
-      const L = S.analyzeLead(src.pts, pxmm, speed, gain, { smooth: 5 });
-      const rr = S.analyzeRhythm(L);
-      if (rr) { RR.push.apply(RR, rr.rr); if (k === 0) { pInfo = rr; pLead = L; if (opts.debug) console.log('ritmo', src.name, JSON.stringify({ pr: rr.pr, prSpread: rr.prSpread, pkSpread: rr.pkSpread, nP: rr.nP, nB: L.beats.length })); } L.marks.forEach(mk => overlay.push({ t: 'r', x: mk.r * pxmm, y: -mk.ry * pxmm / (10 / gain) })); }
+      let L = S.analyzeLead(src.pts, pxmm, speed, gain, { smooth: 5 });
+      let rr = S.analyzeRhythm(L);
+      const hx = consX && src.ci != null && consX[src.ci] ? consX[src.ci].filter(x => x >= src.x0 + pxmm * 2 && x <= src.x1 - pxmm * 2) : null;
+      if (hx && hx.length >= 3) {
+        const L2 = S.analyzeLead(src.pts, pxmm, speed, gain, { smooth: 5, hintX: hx.map(x => x / pxmm) });
+        const rr2 = S.analyzeRhythm(L2);
+        // per le P si tiene la lettura con P presenti e PR più coerente; gli RR irregolari della riga sono corretti
+        // più sotto con i QRS sincroni (consenso) se questi sono regolari
+        const sc = a => !a ? -1 : (a.pPresenti ? 1000 - (a.prSpread || 0) : 0) - relVar(a) * 10;
+        // una lettura «di ripiego» non deve mai creare da sola un BAV I: P accettate solo con PR 100–200 ms (caso 11:
+        // PR 229 letto vs 190 stampato; caso 10: onde F del flutter prese per P)
+        const prOk = a => a && a.pPresenti && a.pr >= 100 && a.pr <= 200;
+        const better = rr2 && (!rr || (rr.pPresenti ? sc(rr2) > sc(rr) + 1 && prOk(rr2) : prOk(rr2) || (!rr2.pPresenti && relVar(rr2) < relVar(rr) - 0.05)));
+        if (opts.debug) console.log('ritmo consenso', src.name, rr ? relVar(rr).toFixed(2) + '/' + rr.pPresenti + '/' + rr.prSpread : '-', rr2 ? relVar(rr2).toFixed(2) + '/' + rr2.pPresenti + '/' + rr2.prSpread : '-', better ? 'usato' : 'non usato');
+        if (better) { L = L2; rr = rr2; }
+      }
+      if (rr) { RR.push.apply(RR, rr.rr); if (k === 0 || (rr.pPresenti && rr.pr >= 100 && rr.pr <= 200 && rr.prSpread != null && rr.prSpread <= 30 && !(pInfo && pInfo.pPresenti))) { pInfo = rr; pLead = L; pInfo.src = src.name; /* 1.5.6: P cercate anche nella 2ª derivazione della riga del ritmo se mancano nella 1ª */ if (opts.debug) console.log('ritmo', src.name, JSON.stringify({ pr: rr.pr, prSpread: rr.prSpread, pkSpread: rr.pkSpread, nP: rr.nP, nB: L.beats.length })); } L.marks.forEach(mk => overlay.push({ t: 'r', x: mk.r * pxmm, y: -mk.ry * pxmm / (10 / gain) })); }
     });
     // 1.4.0: BATTITI DI CONSENSO – nel 6×2 (e nel 3×4) le derivazioni della stessa colonna sono registrate in
     // contemporanea: un QRS vero compare alla stessa ascissa (± 70 ms) in più derivazioni; battiti persi in una
@@ -1390,9 +1411,12 @@
       if (cons && Math.abs(cons.med - m) / cons.med > 0.08) {
         warnings.push('FC: la riga del ritmo (' + Math.round(60000 / m) + '/min) non concorda con i QRS sincroni delle altre derivazioni (' + Math.round(60000 / cons.med) + '/min): proposta la seconda, verificala sul tracciato.');
         m = cons.med; useRR = clean(cons.rr); if (useRR.length < 2) useRR = cons.rr;
+      } else if (cons && cons.rr.length >= 4 && relVar({ rr: cons.rr }) <= 0.12 && (relVar({ rr: useRR }) > 0.15 || useRR.some(v => Math.abs(v - cons.med) > cons.med * 0.25))) {
+        // 1.5.6: riga del ritmo irregolare ma QRS sincroni regolari → battito perso/in più nella riga del ritmo
+        useRR = clean(cons.rr); if (useRR.length < 2) useRR = cons.rr;
       }
       const pr = pInfo && pInfo.pPresenti ? pInfo.pr : null;
-      rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pr, prSpread: pInfo ? pInfo.prSpread : null, pkSpread: pInfo ? pInfo.pkSpread : null, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
+      rhythm = { rr: useRR, rrMean: m, hr: 60000 / m, rrVar: useRR.length >= 3 ? pctl(useRR, 0.9) - pctl(useRR, 0.1) : 0, pPresenti: pInfo ? pInfo.pPresenti : false, pSrc: pInfo ? pInfo.src : null, pr, prSpread: pInfo ? pInfo.prSpread : null, pkSpread: pInfo ? pInfo.pkSpread : null, pDur: pInfo && pInfo.pPresenti ? pInfo.pDur : null, lead: rhythmSources.map(s => s.name).join(' + ') };
     }
     if (rrMed) Object.keys(leads).forEach(k => {
       const L = leads[k]; const exp = (L.durS || 0) * 1000 / rrMed;

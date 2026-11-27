@@ -1,4 +1,4 @@
-# ECGcheck 1.5.5 — Analisi ECG assistita (PWA)
+# ECGcheck 1.5.6 — Analisi ECG assistita (PWA)
 
 Applicazione web installabile (Android/iOS/desktop) per l'analisi **assistita a regole** dell'ECG a 12 derivazioni:
 **fotografa** o carica il **PDF** del tracciato → l'app raddrizza la foto, trova griglia e impulso di taratura,
@@ -93,6 +93,13 @@ Il **PDF esportato dall'elettrocardiografo** resta la fonte più precisa (tracci
 - `criteria.js → META.version / criteriaVersion / lastReview / nextReview`: alla scadenza l'app mostra un
   avviso e, se autorizzata, una notifica.
 - Ogni revisione: aggiorna i file, incrementa `VERSION` in `sw.js`, nota nel registro modifiche (Info).
+
+## Aggiornamento 1.5.6 (27/11/2026) — ritmo e onde P più robusti
+
+| Problema (caso 16 sul telefono) | Correzione |
+|---|---|
+| QRS perso o T contata come QRS nella riga del ritmo → RR «irregolare» | regolarità valutata sui QRS sincroni delle altre derivazioni; 1–2 RR anomali con P coerenti non bloccano più il ritmo |
+| P non riconosciute in II | rianalisi con i QRS sincroni; seconda derivazione della riga del ritmo; mai un BAV I da letture di ripiego (PR 100–200 ms) |
 
 ## Aggiornamento 1.5.5 (27/11/2026) — onde Q patologiche automatiche e foto ad alta risoluzione
 

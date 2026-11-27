@@ -11,7 +11,10 @@
   'use strict';
   const LEADS = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
   const r1 = x => x == null || !isFinite(x) ? null : Math.round(x * 10) / 10;
-  function isIrregular(R) { return !!(R && R.rr && R.rr.length >= 3 && R.rrVar > Math.max(120, 0.15 * R.rrMean)); }
+  // 1.5.6: 1–2 RR anomali su un ritmo per il resto regolare (≥ 70% degli RR entro ± 12% della mediana) = più probabile
+  // un QRS perso/in più nella lettura (o un'extrasistole) che un ritmo irregolare: non rende il ritmo «non classificato»
+  function rrOutliers(R) { if (!R || !R.rr || R.rr.length < 5) return null; const v = R.rr.slice().sort((a, b) => a - b), md = v[v.length >> 1]; const inl = R.rr.filter(x => Math.abs(x - md) <= md * 0.12).length; return inl / R.rr.length >= 0.7 ? R.rr.filter(x => Math.abs(x - md) > md * 0.12) : null; }
+  function isIrregular(R) { if (!(R && R.rr && R.rr.length >= 3 && R.rrVar > Math.max(120, 0.15 * R.rrMean))) return false; const o = R.pPresenti ? rrOutliers(R) : null; return !(o && o.length <= 2); } // solo con P coerenti (mai in FA: nessuna P)
 
   // affidabilità: 'alta' | 'media' | 'bassa' | 'insufficiente'
   function confidence(A) {
@@ -144,10 +147,11 @@
         if (!unrel) {
           set('ritmo.regolarita', isIrregular(R) ? 'irregolare' : 'regolare');
           if (isIrregular(R)) lowConf['ritmo.regolarita'] = 'irregolarità letta dalla foto: possibile battito mancato o in più';
+          else { const o = R.pPresenti ? rrOutliers(R) : null; if (o && o.length) lowConf['ritmo.regolarita'] = 'ritmo regolare con ' + o.length + ' RR anomali (' + o.map(Math.round).join(', ') + ' ms): QRS perso/in più nella lettura o extrasistole? verifica col calibro in marcia'; }
           if (R.pPresenti && /^II/.test(R.lead || '')) {
             set('ritmo.ondeP', 'sinusali'); set('ritmo.rapportoPQRS', '1:1');
             if (R.rrMean) { set('ritmo.pp', String(Math.round(R.rrMean))); set('ritmo.fcAtriale', String(Math.round(60000 / R.rrMean))); }
-            if (photo) lowConf['ritmo.ondeP'] = 'P riconosciute automaticamente';
+            if (photo) lowConf['ritmo.ondeP'] = 'P riconosciute automaticamente' + (R.pSrc && R.pSrc !== 'II' ? ' in ' + R.pSrc + ' (non in II): verifica che siano positive in II' : '');
           }
         }
         if (R.rr && R.rr.length >= 3) { const mx = Math.max.apply(null, R.rr), md = R.rr.slice().sort((a, b) => a - b)[R.rr.length >> 1]; if (mx >= 2000 && mx >= 1.5 * md) set('ritmo.pausaMax', String(Math.round(mx))); }
